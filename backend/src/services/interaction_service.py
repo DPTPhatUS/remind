@@ -2,7 +2,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Interaction, TranscriptSegment
+from db.models import Interaction, InteractionParticipant, TranscriptSegment
 from db.repositories.memory import MemoryRepository
 from db.repositories.people import PeopleRepository
 from db.repositories.review import ReviewRepository
@@ -41,6 +41,59 @@ class InteractionService:
 
     async def list_interactions(self, patient_id: str) -> list[Interaction]:
         return await self.repository.list_interactions(patient_id)
+
+    async def start_live_interaction(
+        self,
+        *,
+        patient_id: str,
+        started_at: str,
+        confidence: float,
+    ) -> Interaction:
+        return await self.repository.create_interaction(
+            patient_id,
+            {
+                "started_at": started_at,
+                "confidence": confidence,
+                "summary": None,
+            },
+        )
+
+    async def close_live_interaction(
+        self,
+        *,
+        interaction_id: str,
+        ended_at: str,
+        confidence: float,
+    ) -> Interaction | None:
+        return await self.repository.close_interaction(
+            interaction_id,
+            {
+                "ended_at": ended_at,
+                "confidence": confidence,
+                "status": "closed",
+            },
+        )
+
+    async def add_participant(
+        self,
+        *,
+        interaction_id: str,
+        person_id: str | None,
+        face_subject: str | None,
+        face_track_id: str | None,
+        recognition_confidence: float | None,
+        recognition_status: str,
+    ) -> InteractionParticipant:
+        return await self.repository.add_participant(
+            interaction_id,
+            {
+                "person_id": person_id,
+                "face_subject": face_subject,
+                "face_track_id": face_track_id,
+                "recognition_confidence": recognition_confidence,
+                "recognition_status": recognition_status,
+            },
+        )
 
     async def add_transcript(
         self,

@@ -589,42 +589,64 @@ Response:
 }
 ```
 
-#### `frame.observed`
+#### `video.frame`
 
-Sends observed recognition context from the desktop client. If `image_base64`
-is present, the backend calls CompreFace recognition, resolves the returned
-subject to a person profile, and returns a recognition update. If no image is
-present, it composes a reminder from the supplied fields.
-
-CompreFace-backed request:
+Sends a raw image frame. The desktop frontend must not send identity,
+relationship, confidence, or reminder fields. The backend samples frames,
+calls CompreFace, resolves the subject, updates interaction detection, and
+returns one or more events.
 
 ```json
 {
-  "type": "frame.observed",
+  "type": "video.frame",
   "payload": {
     "image_base64": "<base64-jpeg>",
-    "filename": "frame.jpg"
+    "content_type": "image/jpeg",
+    "filename": "frame.jpg",
+    "sequence": 42,
+    "captured_at_ms": 12000
   }
 }
 ```
 
-CompreFace-backed response:
+Typical response events:
 
 ```json
-{
-  "type": "recognition.update",
-  "payload": {
-    "subject": "compreface-subject-id",
-    "similarity": 0.97,
-    "face_probability": 0.99,
-    "box": {
-      "probability": 0.99,
-      "x_min": 1,
-      "y_min": 2,
-      "x_max": 3,
-      "y_max": 4
-    },
-    "reminder": {
+[
+  {
+    "type": "media.accepted",
+    "payload": {
+      "media_type": "frame",
+      "content_type": "image/jpeg",
+      "size_bytes": 48122
+    }
+  },
+  {
+    "type": "recognition.update",
+    "payload": {
+      "subject": "compreface-subject-id",
+      "similarity": 0.97,
+      "face_probability": 0.99,
+      "box": {
+        "probability": 0.99,
+        "x_min": 1,
+        "y_min": 2,
+        "x_max": 3,
+        "y_max": 4
+      },
+      "reminder": {
+        "title": "Anna",
+        "lines": [
+          "Your daughter"
+        ],
+        "patient_visible": true,
+        "requires_review": false
+      }
+    }
+  },
+  {
+    "type": "reminder.update",
+    "payload": {
       "title": "Anna",
       "lines": [
         "Your daughter"
@@ -633,79 +655,106 @@ CompreFace-backed response:
       "requires_review": false
     }
   }
-}
+]
 ```
 
-Client-supplied reminder request:
+`frame.observed` is temporarily accepted only when it contains `image_base64`.
+Payloads that include client-supplied identity or reminder context are rejected:
 
 ```json
 {
-  "type": "frame.observed",
+  "type": "session.error",
   "payload": {
-    "display_name": "David",
-    "recognition_status": "introduced",
-    "similarity": 0.88,
-    "relationship_to_patient": "neighbor",
-    "recent_event": "said he helped with groceries yesterday",
-    "sensitive": false
-  }
-}
-```
-
-Response:
-
-```json
-{
-  "type": "reminder.update",
-  "payload": {
-    "title": "They introduced themselves as David.",
-    "lines": [
-      "They said they are your neighbor.",
-      "They said he helped with groceries yesterday."
-    ],
-    "patient_visible": true,
-    "requires_review": true
+    "message": "frame.observed only accepts image_base64 during migration."
   }
 }
 ```
 
 #### `audio.chunk`
 
-Accepts a base64 audio chunk. If `OPENAI_API_KEY` is configured, the WebSocket
-handler transcribes the chunk and returns `transcript.received`. Otherwise, it
-returns `audio.received`.
+Sends raw PCM audio. The frontend does not run speech detection; it only streams
+chunks. The backend validates the format, runs local VAD, buffers utterances,
+starts/ends interactions, and sends completed utterances to OpenAI transcription
+when configured.
 
 ```json
 {
   "type": "audio.chunk",
   "payload": {
-    "content_type": "audio/webm",
-    "data": "<base64-audio>"
+    "content_type": "audio/pcm",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "sample_width_bits": 16,
+    "sequence": 88,
+    "captured_at_ms": 12500,
+    "data": "<base64-signed-16-bit-mono-pcm>"
   }
 }
 ```
 
-Response:
+Accepted response:
 
 ```json
 {
-  "type": "audio.received",
+  "type": "media.accepted",
   "payload": {
-    "content_type": "audio/webm",
-    "size_bytes": 12345
+    "media_type": "audio",
+    "content_type": "audio/pcm",
+    "size_bytes": 640
   }
 }
 ```
 
-OpenAI transcription response:
+Interaction detection events may be sent after media acceptance:
+
+```json
+{
+  "type": "interaction.candidate",
+  "payload": {
+    "confidence": 0.7,
+    "reason": "face_and_speech_detected"
+  }
+}
+```
+
+```json
+{
+  "type": "interaction.started",
+  "payload": {
+    "interaction_id": "interaction-id",
+    "confidence": 0.8,
+    "reason": "stable_face_and_speech",
+    "candidate_ms": 2100
+  }
+}
+```
+
+Completed utterance response:
 
 ```json
 {
   "type": "transcript.received",
   "payload": {
-    "content_type": "audio/webm",
+    "interaction_id": "interaction-id",
+    "content_type": "audio/pcm",
     "size_bytes": 12345,
-    "text": "Hi, I am David."
+    "text": "Hi, I am David.",
+    "started_at_ms": 12500,
+    "ended_at_ms": 14120
+  }
+}
+```
+
+Ended interaction response:
+
+```json
+{
+  "type": "interaction.ended",
+  "payload": {
+    "interaction_id": "interaction-id",
+    "confidence": 0.0,
+    "duration_ms": 8200,
+    "reason": "no_recent_face_or_speech"
   }
 }
 ```
@@ -764,7 +813,8 @@ Response:
 
 #### `session.stop`
 
-Ends the websocket loop.
+Ends the websocket loop. If an interaction is active, the backend closes it and
+returns `interaction.ended`.
 
 ```json
 {

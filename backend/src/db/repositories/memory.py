@@ -1,7 +1,14 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Event, Interaction, MemoryClaim, Relationship, TranscriptSegment
+from db.models import (
+    Event,
+    Interaction,
+    InteractionParticipant,
+    MemoryClaim,
+    Relationship,
+    TranscriptSegment,
+)
 
 
 class MemoryRepository:
@@ -22,6 +29,27 @@ class MemoryRepository:
             .order_by(Interaction.created_at.desc())
         )
         return list(result.scalars())
+
+    async def close_interaction(self, interaction_id: str, values: dict) -> Interaction | None:
+        interaction = await self.session.get(Interaction, interaction_id)
+        if interaction is None:
+            return None
+        for key, value in values.items():
+            setattr(interaction, key, value)
+        await self.session.commit()
+        await self.session.refresh(interaction)
+        return interaction
+
+    async def add_participant(
+        self,
+        interaction_id: str,
+        values: dict,
+    ) -> InteractionParticipant:
+        participant = InteractionParticipant(interaction_id=interaction_id, **values)
+        self.session.add(participant)
+        await self.session.commit()
+        await self.session.refresh(participant)
+        return participant
 
     async def add_transcript(self, interaction_id: str, values: dict) -> TranscriptSegment:
         segment = TranscriptSegment(interaction_id=interaction_id, **values)

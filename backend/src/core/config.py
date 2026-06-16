@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     identity_seen_before_confidence: float = 0.60
     evidence_storage_dir: Path = Path(".local/evidence")
     evidence_retention_days: int = 30
+    live_frame_sample_interval_ms: int = 500
+    live_interaction_candidate_score: float = 0.45
+    live_interaction_active_score: float = 0.70
+    live_interaction_min_candidate_ms: int = 2000
+    live_interaction_end_silence_ms: int = 8000
+    live_audio_sample_rate_hz: int = 16000
+    live_audio_vad_mode: int = 2
+    live_audio_utterance_max_ms: int = 12000
     allow_bootstrap_admin: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
