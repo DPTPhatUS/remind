@@ -1,14 +1,40 @@
+from typing import Protocol
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Interaction, TranscriptSegment
 from db.repositories.memory import MemoryRepository
+from db.repositories.people import PeopleRepository
+from db.repositories.review import ReviewRepository
 from schemas.extraction import MemoryExtraction
 from schemas.interactions import InteractionCreate, TranscriptCreate
 
 
+class EmbeddingProvider(Protocol):
+    async def embed_text(self, text: str) -> list[float]:
+        ...
+
+
 class InteractionService:
-    def __init__(self, session: AsyncSession) -> None:
-        self.repository = MemoryRepository(session)
+    def __init__(
+        self,
+        session: AsyncSession | None = None,
+        *,
+        memory_repository: MemoryRepository | None = None,
+        people_repository: PeopleRepository | None = None,
+        review_repository: ReviewRepository | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
+        if session is None and memory_repository is None:
+            raise ValueError("A session or memory repository is required.")
+        self.repository = memory_repository or MemoryRepository(session)  # type: ignore[arg-type]
+        self.people_repository = people_repository or (
+            PeopleRepository(session) if session is not None else None
+        )
+        self.review_repository = review_repository or (
+            ReviewRepository(session) if session is not None else None
+        )
+        self.embedding_provider = embedding_provider
 
     async def create_interaction(self, patient_id: str, data: InteractionCreate) -> Interaction:
         return await self.repository.create_interaction(patient_id, data.model_dump())
@@ -31,17 +57,84 @@ class InteractionService:
         interaction_id: str,
         extraction: MemoryExtraction,
     ) -> None:
+        introduced_person_id: str | None = None
+        if extraction.introduced_person is not None and self.people_repository is not None:
+            introduced_person = await self.people_repository.create_person(
+                patient_id,
+                {
+                    "display_name": extraction.introduced_person.display_name,
+                    "relationship_to_patient": extraction.introduced_person.relationship_to_patient,
+                    "notes": None,
+                    "recognition_status": "introduced",
+                    "consent_status": "unknown",
+                    "sensitive": False,
+                },
+            )
+            introduced_person_id = introduced_person.id
+            if self.review_repository is not None:
+                await self.review_repository.create_item(
+                    patient_id=patient_id,
+                    item_type="new_person_candidate",
+                    target_type="person",
+                    target_id=introduced_person.id,
+                    title=(
+                        f"Review new person: "
+                        f"{introduced_person.display_name or 'Unknown person'}"
+                    ),
+                    payload={
+                        "source_interaction_id": interaction_id,
+                        "confidence": extraction.introduced_person.confidence,
+                    },
+                )
+
+        for event in extraction.events:
+            created_event = await self.repository.create_event(
+                patient_id,
+                {
+                    "title": event.title,
+                    "description": event.description,
+                    "event_date": event.date_text,
+                    "confidence": event.confidence,
+                    "emotional_importance": "normal",
+                    "patient_visible": True,
+                },
+            )
+            if self.review_repository is not None:
+                await self.review_repository.create_item(
+                    patient_id=patient_id,
+                    item_type="new_event_claim",
+                    target_type="event",
+                    target_id=getattr(created_event, "id", None),
+                    title=f"Review event: {event.title}",
+                    summary=event.description,
+                    payload={"source_interaction_id": interaction_id},
+                )
+
         for claim in extraction.claims:
+            embedding = None
+            if self.embedding_provider is not None:
+                embedding = await self.embedding_provider.embed_text(claim)
             await self.repository.create_claim(
                 patient_id,
                 {
-                    "subject_type": "interaction",
-                    "subject_id": interaction_id,
+                    "subject_type": "person" if introduced_person_id else "interaction",
+                    "subject_id": introduced_person_id or interaction_id,
                     "claim_text": claim,
                     "structured_value": {},
                     "source_type": "interaction",
                     "source_id": interaction_id,
                     "confidence": 0.5,
                     "patient_visible": True,
+                    "embedding": embedding,
                 },
             )
+            if self.review_repository is not None:
+                await self.review_repository.create_item(
+                    patient_id=patient_id,
+                    item_type="memory_claim",
+                    target_type="interaction",
+                    target_id=interaction_id,
+                    title="Review extracted memory claim",
+                    summary=claim,
+                    payload={"source_interaction_id": interaction_id},
+                )

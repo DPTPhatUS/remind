@@ -1,3 +1,5 @@
+from typing import Protocol
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Event, MemoryClaim, Relationship
@@ -7,9 +9,23 @@ from schemas.memories import MemorySearchRequest
 from schemas.relationships import RelationshipCreate
 
 
+class EmbeddingProvider(Protocol):
+    async def embed_text(self, text: str) -> list[float]:
+        ...
+
+
 class MemoryGraphService:
-    def __init__(self, session: AsyncSession) -> None:
-        self.repository = MemoryRepository(session)
+    def __init__(
+        self,
+        session: AsyncSession | None = None,
+        *,
+        memory_repository: MemoryRepository | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
+        if session is None and memory_repository is None:
+            raise ValueError("A session or memory repository is required.")
+        self.repository = memory_repository or MemoryRepository(session)  # type: ignore[arg-type]
+        self.embedding_provider = embedding_provider
 
     async def search_claims(
         self,
@@ -17,6 +33,13 @@ class MemoryGraphService:
         patient_id: str,
         request: MemorySearchRequest,
     ) -> list[MemoryClaim]:
+        if self.embedding_provider is not None:
+            embedding = await self.embedding_provider.embed_text(request.query)
+            return await self.repository.search_claims_by_embedding(
+                patient_id,
+                embedding,
+                request.limit,
+            )
         return await self.repository.search_claims(patient_id, request.query, request.limit)
 
     async def create_relationship(

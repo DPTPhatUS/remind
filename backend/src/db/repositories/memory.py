@@ -48,6 +48,22 @@ class MemoryRepository:
         )
         return list(result.scalars())
 
+    async def search_claims_by_embedding(
+        self,
+        patient_id: str,
+        embedding: list[float],
+        limit: int,
+    ) -> list[MemoryClaim]:
+        result = await self.session.execute(
+            select(MemoryClaim)
+            .where(MemoryClaim.patient_id == patient_id)
+            .where(MemoryClaim.patient_visible.is_(True))
+            .where(MemoryClaim.embedding.is_not(None))
+            .order_by(MemoryClaim.embedding.cosine_distance(embedding))
+            .limit(limit)
+        )
+        return list(result.scalars())
+
     async def create_relationship(self, patient_id: str, values: dict) -> Relationship:
         relationship = Relationship(patient_id=patient_id, **values)
         self.session.add(relationship)

@@ -89,7 +89,8 @@ uv run mypy src
 2. UI sends frame/audio/interaction events.
 3. Backend calls CompreFace for enrolled-face recognition.
 4. Backend stores interactions, transcripts, memory claims, and evidence snippets.
-5. OpenAI adapters transcribe and extract structured memory evidence.
+5. OpenAI adapters extract structured memory evidence from transcript text and
+   embed memory search queries when configured.
 6. Caregiver review promotes evidence into confirmed memory.
 7. Reminder policy returns patient-safe text:
    - high-confidence confirmed/trusted: direct name.

@@ -30,10 +30,11 @@ async def create_person(
 async def update_person(
     person_id: str,
     request: PersonUpdate,
+    patient: PatientDep,
     session: SessionDep,
 ) -> PersonResponse:
     try:
-        person = await PersonService(session).update_person(person_id, request)
+        person = await PersonService(session).update_person(patient.id, person_id, request)
     except AppError as error:
         raise to_http_error(error) from error
     return PersonResponse.model_validate(person)
@@ -42,6 +43,7 @@ async def update_person(
 @router.post("/{person_id}/face-examples", response_model=FaceEnrollmentResponse)
 async def enroll_face(
     person_id: str,
+    patient: PatientDep,
     session: SessionDep,
     compreface: CompreFaceDep,
     file: Annotated[UploadFile, File()],
@@ -51,6 +53,7 @@ async def enroll_face(
             person_id=person_id,
             image_bytes=await file.read(),
             filename=file.filename or "face.jpg",
+            patient_id=patient.id,
         )
     except AppError as error:
         raise to_http_error(error) from error

@@ -25,3 +25,6 @@ class LocalEvidenceStorage:
         async with aiofiles.open(path, "wb") as file:
             await file.write(data)
         return StoredAsset(storage_path=str(path), sha256=digest, size_bytes=len(data))
+
+    async def delete(self, path: str) -> None:
+        Path(path).unlink(missing_ok=True)

@@ -40,6 +40,12 @@ class PeopleRepository:
         await self.session.refresh(person)
         return person
 
+    async def update_person_by_id(self, person_id: str, values: dict) -> Person | None:
+        person = await self.get_person(person_id)
+        if person is None:
+            return None
+        return await self.update_person(person, values)
+
     async def link_subject(
         self,
         *,

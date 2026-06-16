@@ -21,3 +21,8 @@ class SessionErrorMessage(BaseModel):
 class ReminderUpdateMessage(BaseModel):
     type: Literal["reminder.update"] = "reminder.update"
     payload: dict[str, Any]
+
+
+class RecognitionUpdateMessage(BaseModel):
+    type: Literal["recognition.update"] = "recognition.update"
+    payload: dict[str, Any]

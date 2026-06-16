@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
-from api.deps import PatientDep, SessionDep
+from api.deps import PatientDep, SessionDep, SettingsDep
+from providers.openai import OpenAIEmbeddingProvider, OpenAIExtractionProvider
 from schemas.interactions import (
     InteractionCreate,
     InteractionResponse,
@@ -32,10 +33,31 @@ async def create_interaction(
 async def add_transcript(
     interaction_id: str,
     request: TranscriptCreate,
+    patient: PatientDep,
     session: SessionDep,
+    settings: SettingsDep,
 ) -> TranscriptResponse:
     segment = await InteractionService(session).add_transcript(
         interaction_id=interaction_id,
         data=request,
     )
+    if settings.openai_api_key:
+        extraction_provider = OpenAIExtractionProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_text_model,
+        )
+        embedding_provider = OpenAIEmbeddingProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_embedding_model,
+            dimensions=settings.openai_embedding_dimensions,
+        )
+        extraction = await extraction_provider.extract_memory(request.text)
+        await InteractionService(
+            session,
+            embedding_provider=embedding_provider,
+        ).create_claims_from_extraction(
+            patient_id=patient.id,
+            interaction_id=interaction_id,
+            extraction=extraction,
+        )
     return TranscriptResponse.model_validate(segment)
