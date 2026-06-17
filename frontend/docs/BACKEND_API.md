@@ -493,8 +493,9 @@ Response:
 ]
 ```
 
-Current implementation note: memory search uses database text matching. The schema and
-database include pgvector support for future embedding search.
+When `OPENAI_API_KEY` is configured, the backend embeds the query and searches
+stored `memory_claims.embedding` values with pgvector cosine distance. Without
+OpenAI configuration, it falls back to database text matching.
 
 ## Media
 
@@ -527,6 +528,19 @@ Response:
   "status": "active",
   "created_at": "2026-06-16T20:00:00Z",
   "updated_at": "2026-06-16T20:00:00Z"
+}
+```
+
+### `POST /media/cleanup-expired`
+
+Deletes expired active evidence files from local storage and marks their media
+rows as `deleted`.
+
+Response:
+
+```json
+{
+  "deleted": 2
 }
 ```
 
@@ -575,21 +589,185 @@ Response:
 }
 ```
 
-#### `frame.observed`
+#### `video.frame`
 
-Sends observed recognition context from the desktop client. The current
-implementation composes a reminder from the supplied fields.
+Sends a raw image frame. The desktop frontend must not send identity,
+relationship, confidence, or reminder fields. The backend samples frames,
+calls CompreFace, resolves the subject, updates interaction detection, and
+returns one or more events.
 
 ```json
 {
-  "type": "frame.observed",
+  "type": "video.frame",
   "payload": {
-    "display_name": "David",
-    "recognition_status": "introduced",
-    "similarity": 0.88,
-    "relationship_to_patient": "neighbor",
-    "recent_event": "said he helped with groceries yesterday",
-    "sensitive": false
+    "image_base64": "<base64-jpeg>",
+    "content_type": "image/jpeg",
+    "filename": "frame.jpg",
+    "sequence": 42,
+    "captured_at_ms": 12000
+  }
+}
+```
+
+Typical response events:
+
+```json
+[
+  {
+    "type": "media.accepted",
+    "payload": {
+      "media_type": "frame",
+      "content_type": "image/jpeg",
+      "size_bytes": 48122
+    }
+  },
+  {
+    "type": "recognition.update",
+    "payload": {
+      "subject": "compreface-subject-id",
+      "similarity": 0.97,
+      "face_probability": 0.99,
+      "box": {
+        "probability": 0.99,
+        "x_min": 1,
+        "y_min": 2,
+        "x_max": 3,
+        "y_max": 4
+      },
+      "reminder": {
+        "title": "Anna",
+        "lines": [
+          "Your daughter"
+        ],
+        "patient_visible": true,
+        "requires_review": false
+      }
+    }
+  },
+  {
+    "type": "reminder.update",
+    "payload": {
+      "title": "Anna",
+      "lines": [
+        "Your daughter"
+      ],
+      "patient_visible": true,
+      "requires_review": false
+    }
+  }
+]
+```
+
+`frame.observed` is temporarily accepted only when it contains `image_base64`.
+Payloads that include client-supplied identity or reminder context are rejected:
+
+```json
+{
+  "type": "session.error",
+  "payload": {
+    "message": "frame.observed only accepts image_base64 during migration."
+  }
+}
+```
+
+#### `audio.chunk`
+
+Sends raw PCM audio. The frontend does not run speech detection; it only streams
+chunks. The backend validates the format, runs local VAD, buffers utterances,
+starts/ends interactions, and sends completed utterances to OpenAI transcription
+when configured.
+
+```json
+{
+  "type": "audio.chunk",
+  "payload": {
+    "content_type": "audio/pcm",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "sample_width_bits": 16,
+    "sequence": 88,
+    "captured_at_ms": 12500,
+    "data": "<base64-signed-16-bit-mono-pcm>"
+  }
+}
+```
+
+Accepted response:
+
+```json
+{
+  "type": "media.accepted",
+  "payload": {
+    "media_type": "audio",
+    "content_type": "audio/pcm",
+    "size_bytes": 640
+  }
+}
+```
+
+Interaction detection events may be sent after media acceptance:
+
+```json
+{
+  "type": "interaction.candidate",
+  "payload": {
+    "confidence": 0.7,
+    "reason": "face_and_speech_detected"
+  }
+}
+```
+
+```json
+{
+  "type": "interaction.started",
+  "payload": {
+    "interaction_id": "interaction-id",
+    "confidence": 0.8,
+    "reason": "stable_face_and_speech",
+    "candidate_ms": 2100
+  }
+}
+```
+
+Completed utterance response:
+
+```json
+{
+  "type": "transcript.received",
+  "payload": {
+    "interaction_id": "interaction-id",
+    "content_type": "audio/pcm",
+    "size_bytes": 12345,
+    "text": "Hi, I am David.",
+    "started_at_ms": 12500,
+    "ended_at_ms": 14120
+  }
+}
+```
+
+Ended interaction response:
+
+```json
+{
+  "type": "interaction.ended",
+  "payload": {
+    "interaction_id": "interaction-id",
+    "confidence": 0.0,
+    "duration_ms": 8200,
+    "reason": "no_recent_face_or_speech"
+  }
+}
+```
+
+#### `interaction.marker`
+
+Acknowledges an interaction marker.
+
+```json
+{
+  "type": "interaction.marker",
+  "payload": {
+    "marker": "conversation_started"
   }
 }
 ```
@@ -598,42 +776,7 @@ Response:
 
 ```json
 {
-  "type": "reminder.update",
-  "payload": {
-    "title": "They introduced themselves as David.",
-    "lines": [
-      "They said they are your neighbor.",
-      "They said he helped with groceries yesterday."
-    ],
-    "patient_visible": true,
-    "requires_review": true
-  }
-}
-```
-
-#### `audio.chunk`
-
-Accepted by the session orchestrator. Current implementation does not yet
-return a response.
-
-```json
-{
-  "type": "audio.chunk",
-  "payload": {
-    "content_type": "audio/webm",
-    "data": "<base64-audio>"
-  }
-}
-```
-
-#### `interaction.marker`
-
-Accepted by the session orchestrator. Current implementation does not yet
-return a response.
-
-```json
-{
-  "type": "interaction.marker",
+  "type": "interaction.marked",
   "payload": {
     "marker": "conversation_started"
   }
@@ -670,7 +813,8 @@ Response:
 
 #### `session.stop`
 
-Ends the websocket loop.
+Ends the websocket loop. If an interaction is active, the backend closes it and
+returns `interaction.ended`.
 
 ```json
 {
@@ -707,6 +851,8 @@ The live reminder policy avoids presenting uncertain information as confirmed fa
 - The backend package is intentionally flat under `src/`.
 - The CompreFace integration stores opaque subject IDs instead of names.
 - Uploaded media is stored under `.local/evidence/`, which is ignored by git.
-- OpenAI provider adapters exist for transcription, memory extraction, and embeddings,
-  but endpoint-level orchestration for those providers is still minimal.
+- OpenAI extraction and embedding providers are wired into transcript ingestion
+  and memory search when `OPENAI_API_KEY` is configured.
+- Review approvals for person targets apply allowed profile fields from the
+  review payload to the target person.
 - Date/time fields are currently represented as strings in several API models.
