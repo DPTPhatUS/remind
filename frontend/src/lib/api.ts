@@ -1,5 +1,3 @@
-import type { AuthTokenResponse } from "@/lib/api-types"
-
 export class ApiError extends Error {
   status: number
 
@@ -17,51 +15,9 @@ export function getApiBaseUrl() {
   )
 }
 
-export class AuthSessionStore {
-  private key: string
-
-  constructor(key = "remind.auth") {
-    this.key = key
-  }
-
-  read(): AuthTokenResponse | null {
-    const raw = window.localStorage.getItem(this.key)
-    if (!raw) return null
-
-    try {
-      const parsed = JSON.parse(raw) as AuthTokenResponse
-      if (!parsed.access_token || !parsed.expires_at) return null
-      return parsed
-    } catch {
-      return null
-    }
-  }
-
-  save(session: AuthTokenResponse) {
-    window.localStorage.setItem(this.key, JSON.stringify(session))
-  }
-
-  clear() {
-    window.localStorage.removeItem(this.key)
-  }
-
-  current(): AuthTokenResponse | null {
-    const session = this.read()
-    if (!session) return null
-
-    if (new Date(session.expires_at).getTime() <= Date.now()) {
-      this.clear()
-      return null
-    }
-
-    return session
-  }
-}
-
 type ApiClientOptions = {
   baseUrl?: string
   fetcher?: typeof fetch
-  session?: AuthSessionStore
 }
 
 type RequestOptions = {
@@ -72,7 +28,6 @@ type RequestOptions = {
 export function createApiClient(options: ApiClientOptions = {}) {
   const baseUrl = options.baseUrl ?? getApiBaseUrl()
   const fetcher = options.fetcher ?? fetch
-  const session = options.session ?? new AuthSessionStore()
 
   async function request<T>(
     method: string,
@@ -81,11 +36,6 @@ export function createApiClient(options: ApiClientOptions = {}) {
   ): Promise<T> {
     const headers: Record<string, string> = {
       ...(requestOptions.headers as Record<string, string> | undefined),
-    }
-    const token = session.current()
-
-    if (token) {
-      headers.Authorization = `Bearer ${token.access_token}`
     }
 
     const isFormData = requestOptions.body instanceof FormData

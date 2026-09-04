@@ -1,16 +1,3 @@
-export type AuthTokenResponse = {
-  access_token: string
-  token_type: "bearer" | string
-  expires_at: string
-}
-
-export type CurrentUser = {
-  id: string
-  email: string
-  display_name: string
-  role: "admin" | string
-}
-
 export type Patient = {
   id: string
   display_name: string
@@ -23,11 +10,9 @@ export type Patient = {
 
 export type RecognitionStatus =
   | "unknown"
-  | "seen_before"
+  | "recognized"
   | "introduced"
   | "confirmed"
-  | "trusted"
-  | "opted_out"
 
 export type Person = {
   id: string
@@ -37,7 +22,6 @@ export type Person = {
   notes: string | null
   recognition_status: RecognitionStatus
   consent_status: string
-  sensitive: boolean
   created_at: string
   updated_at: string
 }
@@ -49,7 +33,6 @@ export type Relationship = {
   to_person_id: string | null
   relationship_type: string
   confidence: number
-  confirmed_by_user_id: string | null
   source_claim_id: string | null
   created_at: string
   updated_at: string
@@ -80,20 +63,6 @@ export type Interaction = {
   updated_at: string
 }
 
-export type ReviewItem = {
-  id: string
-  patient_id: string
-  item_type: string
-  target_type: string
-  target_id: string
-  title: string
-  summary: string | null
-  payload: Record<string, unknown>
-  status: string
-  created_at: string
-  updated_at: string
-}
-
 export type MemoryClaim = {
   id: string
   patient_id: string
@@ -104,7 +73,6 @@ export type MemoryClaim = {
   source_type: string
   source_id: string
   confidence: number
-  confirmed_by_user_id: string | null
   patient_visible: boolean
   created_at: string
   updated_at: string
@@ -114,7 +82,6 @@ export type ReminderPayload = {
   title: string
   lines: string[]
   patient_visible?: boolean
-  requires_review?: boolean
 }
 
 export type FaceBox = {
