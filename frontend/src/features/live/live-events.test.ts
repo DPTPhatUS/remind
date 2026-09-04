@@ -25,12 +25,10 @@ describe("live event reducer", () => {
         title: "This may be David.",
         lines: ["He introduced himself as your neighbor."],
         patient_visible: true,
-        requires_review: true,
       },
     })
 
     expect(state.reminder?.title).toBe("This may be David.")
-    expect(state.requiresReview).toBe(true)
   })
 
   it("hides non-patient-visible reminders", () => {
@@ -45,9 +43,8 @@ describe("live event reducer", () => {
           title: "Sensitive profile",
           lines: [],
           patient_visible: false,
-          requires_review: false,
         },
-      }
+      },
     )
 
     expect(state.reminder).toBeNull()
@@ -65,7 +62,6 @@ describe("live event reducer", () => {
           title: "Anna",
           lines: ["Your daughter"],
           patient_visible: true,
-          requires_review: false,
         },
       },
     })
@@ -102,7 +98,7 @@ describe("live event reducer", () => {
       {
         type: "session.error",
         payload: { message: "Recognition model timeout" },
-      }
+      },
     )
 
     expect(state.error).toBe("Recognition model timeout")

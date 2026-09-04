@@ -25,6 +25,30 @@ function createMockWebSocket() {
   }
 }
 
+function installWebSocketMock(mockSocket: ReturnType<typeof createMockWebSocket>) {
+  const WebSocketMock = vi.fn().mockImplementation(function () {
+    queueMicrotask(() => {
+      mockSocket.readyState = 1
+      const openHandlers = (
+        mockSocket.addEventListener.mock.calls as [string, () => void][]
+      )
+        .filter((call) => call[0] === "open")
+        .map((call) => call[1])
+      openHandlers.forEach((handler) => handler())
+    })
+    return mockSocket
+  })
+  // @ts-expect-error vitest mock does not have WebSocket static properties
+  WebSocketMock.OPEN = 1
+  // @ts-expect-error vitest mock does not have WebSocket static properties
+  WebSocketMock.CONNECTING = 0
+  // @ts-expect-error vitest mock does not have WebSocket static properties
+  WebSocketMock.CLOSING = 2
+  // @ts-expect-error vitest mock does not have WebSocket static properties
+  WebSocketMock.CLOSED = 3
+  vi.stubGlobal("WebSocket", WebSocketMock)
+}
+
 describe("useLiveSession", () => {
   beforeEach(() => {
     Object.defineProperty(navigator, "mediaDevices", {
@@ -54,11 +78,13 @@ describe("useLiveSession", () => {
           createScriptProcessor: vi.fn().mockReturnValue({
             connect: vi.fn(),
             disconnect: vi.fn(),
-            onaudioprocess: null as ((event: AudioProcessingEvent) => void) | null,
+            onaudioprocess: null as
+              | ((event: AudioProcessingEvent) => void)
+              | null,
           }),
           close: vi.fn(),
         }
-      })
+      }),
     )
   })
 
@@ -68,33 +94,20 @@ describe("useLiveSession", () => {
 
   it("dispatches websocket messages to the live event reducer", async () => {
     const mockSocket = createMockWebSocket()
-
-    const WebSocketMock = vi.fn().mockImplementation(function () {
-      queueMicrotask(() => {
-        mockSocket.readyState = 1
-        const openHandlers = (mockSocket.addEventListener.mock.calls as [string, () => void][])
-          .filter((call) => call[0] === "open")
-          .map((call) => call[1])
-        openHandlers.forEach((handler) => handler())
-      })
-      return mockSocket
-    })
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.OPEN = 1
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CONNECTING = 0
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CLOSING = 2
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CLOSED = 3
-    vi.stubGlobal("WebSocket", WebSocketMock)
+    installWebSocketMock(mockSocket)
 
     const { result } = renderHook(() => useLiveSession())
 
-    await waitFor(() => expect(result.current.connectionState).toBe("connected"))
+    await waitFor(() =>
+      expect(result.current.connectionState).toBe("connected"),
+    )
 
-    const messageCalls = (mockSocket.addEventListener.mock.calls as [string, (event: { data: string }) => void][])
-      .filter((call) => call[0] === "message")
+    const messageCalls = (
+      mockSocket.addEventListener.mock.calls as [
+        string,
+        (event: { data: string }) => void,
+      ][]
+    ).filter((call) => call[0] === "message")
     const messageHandler = messageCalls[0][1]
 
     messageHandler({
@@ -104,13 +117,12 @@ describe("useLiveSession", () => {
           title: "This may be David.",
           lines: ["He introduced himself as your neighbor."],
           patient_visible: true,
-          requires_review: false,
         },
       }),
     })
 
     await waitFor(() =>
-      expect(result.current.state.reminder?.title).toBe("This may be David.")
+      expect(result.current.state.reminder?.title).toBe("This may be David."),
     )
 
     messageHandler({
@@ -123,52 +135,25 @@ describe("useLiveSession", () => {
     })
 
     await waitFor(() =>
-      expect(result.current.state.error).toBe("Recognition model timeout")
+      expect(result.current.state.error).toBe("Recognition model timeout"),
     )
   })
 
-  it("submits correction via websocket", async () => {
+  it("returns exactly state, stream, and connectionState (no submitCorrection)", async () => {
     const mockSocket = createMockWebSocket()
-
-    const WebSocketMock = vi.fn().mockImplementation(function () {
-      queueMicrotask(() => {
-        mockSocket.readyState = 1
-        const openHandlers = (mockSocket.addEventListener.mock.calls as [string, () => void][])
-          .filter((call) => call[0] === "open")
-          .map((call) => call[1])
-        openHandlers.forEach((handler) => handler())
-      })
-      return mockSocket
-    })
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.OPEN = 1
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CONNECTING = 0
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CLOSING = 2
-    // @ts-expect-error vitest mock does not have WebSocket static properties
-    WebSocketMock.CLOSED = 3
-    vi.stubGlobal("WebSocket", WebSocketMock)
+    installWebSocketMock(mockSocket)
 
     const { result } = renderHook(() => useLiveSession())
 
-    await waitFor(() => expect(result.current.connectionState).toBe("connected"))
-
-    result.current.submitCorrection("wrong_person", "person-1")
-
-    await waitFor(() => {
-      const correctionCalls = (mockSocket.send.mock.calls as [string][]).filter(
-        ([msg]) => JSON.parse(msg).type === "correction.submitted"
-      )
-      return correctionCalls.length > 0
-    })
-
-    const correctionCall = (mockSocket.send.mock.calls as [string][]).find(
-      ([msg]) => JSON.parse(msg).type === "correction.submitted"
+    await waitFor(() =>
+      expect(result.current.connectionState).toBe("connected"),
     )
-    expect(correctionCall).toBeDefined()
-    const payload = JSON.parse(correctionCall![0]).payload
-    expect(payload.correction).toBe("wrong_person")
-    expect(payload.target_id).toBe("person-1")
+
+    expect(Object.keys(result.current).sort()).toEqual([
+      "connectionState",
+      "state",
+      "stream",
+    ])
+    expect(result.current).not.toHaveProperty("submitCorrection")
   })
 })
