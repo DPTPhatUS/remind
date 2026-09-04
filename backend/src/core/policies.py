@@ -4,11 +4,9 @@ from enum import StrEnum
 
 class RecognitionStatus(StrEnum):
     UNKNOWN = "unknown"
-    SEEN_BEFORE = "seen_before"
+    RECOGNIZED = "recognized"
     INTRODUCED = "introduced"
     CONFIRMED = "confirmed"
-    TRUSTED = "trusted"
-    OPTED_OUT = "opted_out"
 
 
 @dataclass(frozen=True)
@@ -16,7 +14,6 @@ class IdentityDisplayDecision:
     text: str
     patient_visible: bool
     is_identity_assertion: bool
-    requires_review: bool
 
 
 def build_identity_display(
@@ -26,52 +23,44 @@ def build_identity_display(
     similarity: float | None,
     high_confidence: float = 0.95,
     medium_confidence: float = 0.80,
-    seen_before_confidence: float = 0.60,
+    recognized_confidence: float = 0.60,
 ) -> IdentityDisplayDecision:
-    if status == RecognitionStatus.OPTED_OUT:
-        return IdentityDisplayDecision("", False, False, False)
-
     if not display_name:
-        if similarity is not None and similarity >= seen_before_confidence:
+        if similarity is not None and similarity >= recognized_confidence:
             return IdentityDisplayDecision(
                 "You may have seen this person before.",
                 True,
                 False,
-                True,
             )
-        return IdentityDisplayDecision("I do not recognize this person.", True, False, False)
+        return IdentityDisplayDecision("I do not recognize this person.", True, False)
 
     if status == RecognitionStatus.INTRODUCED:
         return IdentityDisplayDecision(
             f"They introduced themselves as {display_name}.",
             True,
             False,
-            True,
         )
 
-    if status in {RecognitionStatus.CONFIRMED, RecognitionStatus.TRUSTED}:
+    if status == RecognitionStatus.CONFIRMED:
         if similarity is not None and similarity >= high_confidence:
-            return IdentityDisplayDecision(display_name, True, True, False)
+            return IdentityDisplayDecision(display_name, True, True)
         if similarity is not None and similarity >= medium_confidence:
             return IdentityDisplayDecision(
                 f"This may be {display_name}.",
                 True,
                 False,
-                True,
             )
         return IdentityDisplayDecision(
             "You may have met this person before.",
             True,
             False,
-            True,
         )
 
-    if status == RecognitionStatus.SEEN_BEFORE:
+    if status == RecognitionStatus.RECOGNIZED:
         return IdentityDisplayDecision(
-            "You have seen this person before. Their name has not been confirmed yet.",
+            "You may recognize this person. Their name has not been confirmed yet.",
             True,
             False,
-            True,
         )
 
-    return IdentityDisplayDecision("I do not recognize this person.", True, False, False)
+    return IdentityDisplayDecision("I do not recognize this person.", True, False)

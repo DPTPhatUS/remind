@@ -44,7 +44,6 @@ class Person(IdMixin, TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     recognition_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
     consent_status: Mapped[str] = mapped_column(String(32), default="unknown")
-    sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
 
     face_links: Mapped[list["FaceSubjectLink"]] = relationship(back_populates="person")
 
@@ -59,15 +58,6 @@ class FaceSubjectLink(IdMixin, TimestampMixin, Base):
     source_interaction_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     person: Mapped[Person] = relationship(back_populates="face_links")
-
-
-class ConsentRecord(IdMixin, TimestampMixin, Base):
-    __tablename__ = "consent_records"
-
-    person_id: Mapped[str] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), index=True)
-    consent_status: Mapped[str] = mapped_column(String(32))
-    scope: Mapped[str] = mapped_column(String(160), default="recognition")
-    recorded_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class Interaction(IdMixin, TimestampMixin, Base):
@@ -123,7 +113,6 @@ class MemoryClaim(IdMixin, TimestampMixin, Base):
     source_type: Mapped[str] = mapped_column(String(64), default="interaction")
     source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    confirmed_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     patient_visible: Mapped[bool] = mapped_column(Boolean, default=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
 
@@ -142,7 +131,6 @@ class Relationship(IdMixin, TimestampMixin, Base):
     )
     relationship_type: Mapped[str] = mapped_column(String(160))
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
-    confirmed_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_claim_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
@@ -169,33 +157,6 @@ class EventParticipant(IdMixin, TimestampMixin, Base):
     role: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
-class ReviewItem(IdMixin, TimestampMixin, Base):
-    __tablename__ = "review_items"
-
-    patient_id: Mapped[str] = mapped_column(
-        ForeignKey("patients.id", ondelete="CASCADE"),
-        index=True,
-    )
-    item_type: Mapped[str] = mapped_column(String(64))
-    target_type: Mapped[str] = mapped_column(String(64))
-    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    title: Mapped[str] = mapped_column(String(240))
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-
-
-class Correction(IdMixin, TimestampMixin, Base):
-    __tablename__ = "corrections"
-
-    target_type: Mapped[str] = mapped_column(String(64))
-    target_id: Mapped[str] = mapped_column(String(36))
-    correction_type: Mapped[str] = mapped_column(String(64))
-    old_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    new_value: Mapped[dict] = mapped_column(JSON, default=dict)
-    corrected_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-
-
 class MediaAsset(IdMixin, TimestampMixin, Base):
     __tablename__ = "media_assets"
 
@@ -211,16 +172,6 @@ class MediaAsset(IdMixin, TimestampMixin, Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     retention_expires_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
-
-
-class AuditLog(IdMixin, TimestampMixin, Base):
-    __tablename__ = "audit_logs"
-
-    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    action: Mapped[str] = mapped_column(String(120))
-    target_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 Index(

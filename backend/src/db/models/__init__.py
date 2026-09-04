@@ -1,8 +1,5 @@
 from db.models.entities import (
-    AuditLog,
     CaregiverAccess,
-    ConsentRecord,
-    Correction,
     Event,
     EventParticipant,
     FaceSubjectLink,
@@ -13,16 +10,12 @@ from db.models.entities import (
     Patient,
     Person,
     Relationship,
-    ReviewItem,
     TranscriptSegment,
     UserAccount,
 )
 
 __all__ = [
-    "AuditLog",
     "CaregiverAccess",
-    "ConsentRecord",
-    "Correction",
     "Event",
     "EventParticipant",
     "FaceSubjectLink",
@@ -33,7 +26,6 @@ __all__ = [
     "Patient",
     "Person",
     "Relationship",
-    "ReviewItem",
     "TranscriptSegment",
     "UserAccount",
 ]

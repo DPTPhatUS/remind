@@ -33,13 +33,12 @@ class InteractionDetector:
         now_ms: int,
         face_present: bool,
         recognized: bool,
-        opted_out: bool,
     ) -> None:
         if not face_present:
             return
         self._last_face_at_ms = now_ms
         self._last_activity_at_ms = now_ms
-        if recognized and not opted_out:
+        if recognized:
             self._last_recognized_at_ms = now_ms
 
     def observe_speech(self, *, now_ms: int) -> None:

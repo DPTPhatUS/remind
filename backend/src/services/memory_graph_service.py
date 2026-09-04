@@ -47,10 +47,8 @@ class MemoryGraphService:
         *,
         patient_id: str,
         data: RelationshipCreate,
-        confirmed_by_user_id: str | None = None,
     ) -> Relationship:
         values = data.model_dump()
-        values["confirmed_by_user_id"] = confirmed_by_user_id
         return await self.repository.create_relationship(patient_id, values)
 
     async def list_relationships(self, patient_id: str) -> list[Relationship]:

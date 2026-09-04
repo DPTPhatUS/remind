@@ -10,9 +10,6 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_prefix: str = "/api/v1"
     database_url: str = "postgresql+asyncpg://remind:remind@localhost:5432/remind"
-    jwt_secret: str = "change-me-in-production"
-    jwt_issuer: str = "remind-backend"
-    access_token_minutes: int = 720
     openai_api_key: str = ""
     openai_text_model: str = "gpt-5.5"
     openai_transcribe_model: str = "gpt-4o-transcribe"
@@ -22,7 +19,7 @@ class Settings(BaseSettings):
     compreface_api_key: str = ""
     identity_high_confidence: float = 0.95
     identity_medium_confidence: float = 0.80
-    identity_seen_before_confidence: float = 0.60
+    identity_recognized_confidence: float = 0.60
     evidence_storage_dir: Path = Path(".local/evidence")
     evidence_retention_days: int = 30
     live_frame_sample_interval_ms: int = 500
@@ -33,7 +30,6 @@ class Settings(BaseSettings):
     live_audio_sample_rate_hz: int = 16000
     live_audio_vad_mode: int = 2
     live_audio_utterance_max_ms: int = 12000
-    allow_bootstrap_admin: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -16,5 +16,4 @@ class RelationshipResponse(TimestampedResponse):
     to_person_id: str | None
     relationship_type: str
     confidence: float
-    confirmed_by_user_id: str | None
     source_claim_id: str | None

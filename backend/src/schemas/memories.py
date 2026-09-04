@@ -17,5 +17,4 @@ class MemoryClaimResponse(TimestampedResponse):
     source_type: str
     source_id: str | None
     confidence: float
-    confirmed_by_user_id: str | None
     patient_visible: bool

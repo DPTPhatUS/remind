@@ -27,7 +27,6 @@ class ResolvedIdentity:
     person_id: str | None = None
     relationship_to_patient: str | None = None
     recent_event: str | None = None
-    sensitive: bool = False
 
 
 SubjectResolver = Callable[[str], Awaitable[ResolvedIdentity | None]]
@@ -89,14 +88,6 @@ class LiveSessionOrchestrator:
         payload = message.get("payload") or {}
         if message_type == "session.start":
             return self.ready_message()
-        if message_type == "correction.submitted":
-            return ReminderUpdateMessage(
-                payload={
-                    "title": "Correction saved for caregiver review.",
-                    "lines": [],
-                    "requires_review": True,
-                }
-            ).model_dump()
         if message_type == "video.frame":
             return await self._handle_video_frame(payload)
         if message_type == "frame.observed":
@@ -205,7 +196,6 @@ class LiveSessionOrchestrator:
                     similarity=primary.similarity,
                     relationship_to_patient=resolved.relationship_to_patient,
                     recent_event=resolved.recent_event,
-                    sensitive=resolved.sensitive,
                 )
             ).__dict__
 
@@ -216,7 +206,6 @@ class LiveSessionOrchestrator:
             now_ms=captured_at_ms,
             face_present=True,
             recognized=resolved is not None,
-            opted_out=recognition_status == RecognitionStatus.OPTED_OUT,
         )
         if self.active_interaction_id is not None and self.participant_recorder is not None:
             participant_key = (
@@ -348,7 +337,6 @@ class LiveSessionOrchestrator:
             "recognition_status",
             "relationship_to_patient",
             "recent_event",
-            "sensitive",
             "similarity",
         }
         return any(field in payload for field in forbidden_fields)
