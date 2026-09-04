@@ -62,7 +62,6 @@ async def live_session(websocket: WebSocket, session_id: str) -> None:
                 recognition_status=status,
                 relationship_to_patient=person.relationship_to_patient,
                 recent_event=None,
-                sensitive=person.sensitive,
             )
 
     audio_transcriber = None

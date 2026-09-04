@@ -9,7 +9,6 @@ class PersonCreate(BaseModel):
     notes: str | None = None
     recognition_status: str = "unknown"
     consent_status: str = "unknown"
-    sensitive: bool = False
 
 
 class PersonUpdate(BaseModel):
@@ -18,7 +17,6 @@ class PersonUpdate(BaseModel):
     notes: str | None = None
     recognition_status: str | None = None
     consent_status: str | None = None
-    sensitive: bool | None = None
 
 
 class PersonResponse(TimestampedResponse):
@@ -28,7 +26,6 @@ class PersonResponse(TimestampedResponse):
     notes: str | None
     recognition_status: str
     consent_status: str
-    sensitive: bool
 
 
 class FaceEnrollmentResponse(BaseModel):

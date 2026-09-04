@@ -10,7 +10,6 @@ class ReminderContext:
     similarity: float | None
     relationship_to_patient: str | None = None
     recent_event: str | None = None
-    sensitive: bool = False
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,6 @@ class Reminder:
     title: str
     lines: list[str] = field(default_factory=list)
     patient_visible: bool = True
-    requires_review: bool = False
 
 
 def compose_reminder(context: ReminderContext) -> Reminder:
@@ -27,12 +25,11 @@ def compose_reminder(context: ReminderContext) -> Reminder:
         display_name=context.display_name,
         similarity=context.similarity,
     )
-    if context.sensitive or not decision.patient_visible:
+    if not decision.patient_visible:
         return Reminder(
             title="I cannot identify this person.",
             lines=[],
             patient_visible=False,
-            requires_review=decision.requires_review,
         )
 
     lines: list[str] = []
@@ -50,5 +47,4 @@ def compose_reminder(context: ReminderContext) -> Reminder:
         title=decision.text,
         lines=lines,
         patient_visible=decision.patient_visible,
-        requires_review=decision.requires_review,
     )

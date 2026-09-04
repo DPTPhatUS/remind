@@ -1,5 +1,4 @@
 from db.models.entities import (
-    CaregiverAccess,
     Event,
     EventParticipant,
     FaceSubjectLink,
@@ -11,11 +10,9 @@ from db.models.entities import (
     Person,
     Relationship,
     TranscriptSegment,
-    UserAccount,
 )
 
 __all__ = [
-    "CaregiverAccess",
     "Event",
     "EventParticipant",
     "FaceSubjectLink",
@@ -27,5 +24,4 @@ __all__ = [
     "Person",
     "Relationship",
     "TranscriptSegment",
-    "UserAccount",
 ]

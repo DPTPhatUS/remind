@@ -5,16 +5,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base, IdMixin, TimestampMixin
 
 
-class UserAccount(IdMixin, TimestampMixin, Base):
-    __tablename__ = "user_accounts"
-
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    display_name: Mapped[str] = mapped_column(String(160))
-    password_hash: Mapped[str] = mapped_column(Text)
-    role: Mapped[str] = mapped_column(String(32), default="caregiver")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-
 class Patient(IdMixin, TimestampMixin, Base):
     __tablename__ = "patients"
 
@@ -22,14 +12,6 @@ class Patient(IdMixin, TimestampMixin, Base):
     date_of_birth: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preferences: Mapped[dict] = mapped_column(JSON, default=dict)
     accessibility_settings: Mapped[dict] = mapped_column(JSON, default=dict)
-
-
-class CaregiverAccess(IdMixin, TimestampMixin, Base):
-    __tablename__ = "caregiver_access"
-
-    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"))
-    user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id", ondelete="CASCADE"))
-    access_level: Mapped[str] = mapped_column(String(32), default="admin")
 
 
 class Person(IdMixin, TimestampMixin, Base):
