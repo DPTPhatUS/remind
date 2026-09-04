@@ -105,3 +105,64 @@ describe("app routes", () => {
     },
   )
 })
+
+describe("test_patient_nav_is_top_level", () => {
+  beforeEach(() => {
+    mockGet.mockReset()
+    mockGet.mockResolvedValue([])
+  })
+
+  it.each(["/", "/people", "/people/abc-123", "/profile"])(
+    "TopNav renders on patient route %s",
+    (route) => {
+      renderApp(route)
+      expect(screen.getAllByTestId("top-nav").length).toBeGreaterThan(0)
+      expect(screen.getAllByRole("link", { name: "Live" }).length).toBeGreaterThan(0)
+      expect(screen.getAllByRole("link", { name: "People" }).length).toBeGreaterThan(0)
+      expect(screen.getAllByRole("link", { name: "Profile" }).length).toBeGreaterThan(0)
+    },
+  )
+
+  it.each(["/admin/review", "/admin", "/admin/anything", "/login", "/setup"])(
+    "redirects %s to / (no /admin/*, /login, /setup route registered)",
+    (route) => {
+      renderApp(route)
+      expect(screen.getByText(/live assistant/i)).toBeInTheDocument()
+      expect(screen.queryByText(/admin/i)).not.toBeInTheDocument()
+    },
+  )
+})
+
+describe("test_patient_me_is_no_auth", () => {
+  it("createApiClient does not attach an Authorization header to GET /patients/me", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({
+        id: "pt1",
+        display_name: "Patient",
+        date_of_birth: null,
+        preferences: {},
+        accessibility_settings: {},
+        created_at: "",
+        updated_at: "",
+      }),
+    })
+    const realApi = await vi.importActual<typeof import("@/lib/api")>("@/lib/api")
+    vi.stubGlobal("fetch", fetchMock)
+
+    const client = realApi.createApiClient({ baseUrl: "http://test/api/v1" })
+    const patient = (await client.get("/patients/me")) as { id: string }
+
+    expect(patient.id).toBe("pt1")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.method).toBe("GET")
+    const headers = init.headers as Record<string, string>
+    expect(headers).toBeDefined()
+    expect("Authorization" in headers).toBe(false)
+    expect("authorization" in headers).toBe(false)
+    vi.unstubAllGlobals()
+  })
+})
