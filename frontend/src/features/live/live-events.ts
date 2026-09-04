@@ -17,7 +17,6 @@ export type LiveState = {
   sessionId: string | null
   reminder: LiveReminder | null
   recognitions: RecognitionChip[]
-  requiresReview: boolean
   media: {
     frameAccepted: boolean
     audioAccepted: boolean
@@ -36,7 +35,6 @@ export function createInitialLiveState(): LiveState {
     sessionId: null,
     reminder: null,
     recognitions: [],
-    requiresReview: false,
     media: {
       frameAccepted: false,
       audioAccepted: false,
@@ -124,7 +122,6 @@ function reminderState(reminder: ReminderPayload): Partial<LiveState> {
   if (reminder.patient_visible === false) {
     return {
       reminder: null,
-      requiresReview: Boolean(reminder.requires_review),
     }
   }
 
@@ -133,7 +130,6 @@ function reminderState(reminder: ReminderPayload): Partial<LiveState> {
       title: reminder.title,
       lines: reminder.lines,
     },
-    requiresReview: Boolean(reminder.requires_review),
   }
 }
 

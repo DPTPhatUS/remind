@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react"
+import { useEffect, useReducer, useRef, useState } from "react"
 
 import {
   createInitialLiveState,
@@ -114,23 +114,7 @@ export function useLiveSession() {
     }
   }, [])
 
-  const submitCorrection = useCallback((correction: string, targetId?: string) => {
-    const socket = socketRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-
-    socket.send(
-      JSON.stringify({
-        type: "correction.submitted",
-        payload: {
-          target_type: "recognition",
-          target_id: targetId ?? "current",
-          correction,
-        },
-      })
-    )
-  }, [])
-
-  return { state, stream, connectionState, submitCorrection }
+  return { state, stream, connectionState }
 }
 
 function sendVideoFrame(

@@ -1,22 +1,12 @@
 import { useEffect, useRef } from "react"
-import { MoreHorizontalIcon, ShieldIcon, UserRoundIcon, WifiIcon } from "lucide-react"
+import { UserRoundIcon, WifiIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useLiveSession } from "@/features/live/live-session"
 
 export function LiveAssistantPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const { state, stream, connectionState, submitCorrection } = useLiveSession()
-  const activeRecognition = state.recognitions[0]
+  const { state, stream, connectionState } = useLiveSession()
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -38,12 +28,6 @@ export function LiveAssistantPage() {
             <h1 className="text-lg font-semibold tracking-normal">Live assistant</h1>
             <p className="text-sm text-background/70">Visual-first memory support</p>
           </div>
-          <Button asChild variant="secondary" size="sm">
-            <a href="/admin/review">
-              <ShieldIcon data-icon="inline-start" />
-              Caregiver
-            </a>
-          </Button>
         </header>
 
         <video
@@ -76,69 +60,20 @@ export function LiveAssistantPage() {
         </div>
 
         <section className="absolute right-4 bottom-4 left-4 rounded-xl border border-background/15 bg-background p-4 text-foreground shadow-2xl md:right-auto md:left-1/2 md:w-[min(560px,calc(100%-2rem))] md:-translate-x-1/2">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <Badge variant={state.requiresReview ? "outline" : "secondary"}>
-                  {state.requiresReview ? "Needs review" : "Patient-safe"}
-                </Badge>
-                <Badge variant="outline">
-                  <WifiIcon data-icon="inline-start" />
-                  {connectionState}
-                </Badge>
-              </div>
-              <h2 className="text-2xl font-semibold tracking-normal">{title}</h2>
-              {lines.map((line) => (
-                <p key={line} className="text-base text-muted-foreground">
-                  {line}
-                </p>
-              ))}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">Patient-safe</Badge>
+              <Badge variant="outline">
+                <WifiIcon data-icon="inline-start" />
+                {connectionState}
+              </Badge>
             </div>
-
-            <DropdownMenu>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="icon" aria-label="Reminder actions">
-                      <MoreHorizontalIcon />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent>Reminder actions</TooltipContent>
-              </Tooltip>
-              <DropdownMenuContent align="end">
-                <DropdownMenuGroup>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      submitCorrection("confirmed_correct", activeRecognition?.subject)
-                    }
-                  >
-                    This is correct
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      submitCorrection("wrong_person", activeRecognition?.subject)
-                    }
-                  >
-                    Wrong person
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      submitCorrection("unknown_person", activeRecognition?.subject)
-                    }
-                  >
-                    I don&apos;t know them
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      submitCorrection("ask_caregiver", activeRecognition?.subject)
-                    }
-                  >
-                    Ask caregiver
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <h2 className="text-2xl font-semibold tracking-normal">{title}</h2>
+            {lines.map((line) => (
+              <p key={line} className="text-base text-muted-foreground">
+                {line}
+              </p>
+            ))}
           </div>
         </section>
       </section>
