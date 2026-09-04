@@ -226,7 +226,6 @@ async def test_audio_chunk_starts_interaction_and_persists_transcript_when_speec
         now_ms=1000,
         face_present=True,
         recognized=True,
-        opted_out=False,
     )
 
     first_response = await orchestrator.handle_message(
@@ -375,7 +374,6 @@ async def test_silent_audio_chunk_can_end_stale_active_interaction() -> None:
         now_ms=1000,
         face_present=True,
         recognized=True,
-        opted_out=False,
     )
     orchestrator.detector.observe_speech(now_ms=1000)
     orchestrator.detector.evaluate(now_ms=1000)
@@ -383,7 +381,6 @@ async def test_silent_audio_chunk_can_end_stale_active_interaction() -> None:
         now_ms=1100,
         face_present=True,
         recognized=True,
-        opted_out=False,
     )
     orchestrator.detector.observe_speech(now_ms=1100)
     orchestrator.detector.evaluate(now_ms=1100)

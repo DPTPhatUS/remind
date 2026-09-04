@@ -11,7 +11,6 @@ def test_confirmed_high_confidence_identity_is_asserted() -> None:
     assert decision.patient_visible is True
     assert decision.text == "David"
     assert decision.is_identity_assertion is True
-    assert decision.requires_review is False
 
 
 def test_medium_confidence_confirmed_identity_is_uncertain() -> None:
@@ -24,7 +23,6 @@ def test_medium_confidence_confirmed_identity_is_uncertain() -> None:
     assert decision.patient_visible is True
     assert decision.text == "This may be David."
     assert decision.is_identity_assertion is False
-    assert decision.requires_review is True
 
 
 def test_introduced_identity_is_presented_as_heard_evidence() -> None:
@@ -37,17 +35,30 @@ def test_introduced_identity_is_presented_as_heard_evidence() -> None:
     assert decision.patient_visible is True
     assert decision.text == "They introduced themselves as David."
     assert decision.is_identity_assertion is False
-    assert decision.requires_review is True
 
 
-def test_opted_out_identity_is_never_patient_visible() -> None:
+def test_recognized_identity_is_presented_as_unconfirmed_recognition() -> None:
     decision = build_identity_display(
-        status=RecognitionStatus.OPTED_OUT,
+        status=RecognitionStatus.RECOGNIZED,
         display_name="David",
-        similarity=0.99,
+        similarity=0.91,
     )
 
-    assert decision.patient_visible is False
-    assert decision.text == ""
+    assert decision.patient_visible is True
+    assert (
+        decision.text
+        == "You may recognize this person. Their name has not been confirmed yet."
+    )
     assert decision.is_identity_assertion is False
-    assert decision.requires_review is False
+
+
+def test_unknown_identity_with_no_display_name_is_presented_safely() -> None:
+    decision = build_identity_display(
+        status=RecognitionStatus.UNKNOWN,
+        display_name=None,
+        similarity=None,
+    )
+
+    assert decision.patient_visible is True
+    assert decision.text == "I do not recognize this person."
+    assert decision.is_identity_assertion is False

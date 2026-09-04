@@ -82,7 +82,7 @@ def test_audio_buffer_emits_utterance_after_trailing_silence() -> None:
 def test_interaction_detector_ignores_brief_face_without_speech() -> None:
     detector = InteractionDetector(InteractionDetectorConfig())
 
-    detector.observe_face(now_ms=1000, face_present=True, recognized=True, opted_out=False)
+    detector.observe_face(now_ms=1000, face_present=True, recognized=True)
     events = detector.evaluate(now_ms=1000)
 
     assert events == []
@@ -97,10 +97,10 @@ def test_interaction_detector_starts_after_stable_face_and_speech() -> None:
         )
     )
 
-    detector.observe_face(now_ms=1000, face_present=True, recognized=True, opted_out=False)
+    detector.observe_face(now_ms=1000, face_present=True, recognized=True)
     detector.observe_speech(now_ms=1000)
     candidate_events = detector.evaluate(now_ms=1000)
-    detector.observe_face(now_ms=3100, face_present=True, recognized=True, opted_out=False)
+    detector.observe_face(now_ms=3100, face_present=True, recognized=True)
     detector.observe_speech(now_ms=3100)
     active_events = detector.evaluate(now_ms=3100)
 
@@ -117,10 +117,10 @@ def test_interaction_detector_ends_after_no_recent_activity() -> None:
             end_silence_ms=8000,
         )
     )
-    detector.observe_face(now_ms=1000, face_present=True, recognized=True, opted_out=False)
+    detector.observe_face(now_ms=1000, face_present=True, recognized=True)
     detector.observe_speech(now_ms=1000)
     detector.evaluate(now_ms=1000)
-    detector.observe_face(now_ms=1100, face_present=True, recognized=True, opted_out=False)
+    detector.observe_face(now_ms=1100, face_present=True, recognized=True)
     detector.observe_speech(now_ms=1100)
     detector.evaluate(now_ms=1100)
 
