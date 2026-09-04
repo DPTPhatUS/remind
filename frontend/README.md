@@ -1,5 +1,7 @@
 # React + TypeScript + Vite
 
+> **Note**: This release drops the caregiver / login flow and the review pipeline. The single Patient row is auto-created on startup. On an existing DB, **drop and recreate** the Postgres volume before `alembic upgrade head` — the migration is non-data-preserving (opted-out people are deleted; caregiver tables/columns are dropped).
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
