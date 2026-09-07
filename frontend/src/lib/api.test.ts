@@ -16,15 +16,15 @@ describe("api client", () => {
       ok: true,
       status: 200,
       headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ id: "user-id" }),
+      json: async () => ({ id: "patient-id" }),
     })
 
     const client = createApiClient({ fetcher: fetchMock })
-    const result = await client.get("/auth/me")
+    const result = await client.get("/patients/me")
 
-    expect(result).toEqual({ id: "user-id" })
+    expect(result).toEqual({ id: "patient-id" })
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/v1/auth/me",
+      "http://localhost:8000/api/v1/patients/me",
       expect.objectContaining({
         headers: expect.not.objectContaining({
           Authorization: expect.any(String),

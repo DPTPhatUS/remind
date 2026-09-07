@@ -1,19 +1,10 @@
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: remind
-      POSTGRES_PASSWORD: remind
-      POSTGRES_DB: remind
-    ports:
-      - "5432:5432"
-    volumes:
-      - remind-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U remind -d remind"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+  # The project uses the host's existing Postgres 17 (with the pgvector
+  # extension installed) on localhost:5432, so this compose file only stands
+  # up the CompreFace face-recognition stack. To bootstrap the database:
+  #   PGPASSWORD=remind psql -h localhost -U remind -d remind \
+  #     -c "CREATE EXTENSION IF NOT EXISTS vector;"
+  #   uv run alembic upgrade head
 
   compreface-postgres-db:
     image: exadel/compreface-postgres-db:1.2.0
@@ -61,9 +52,12 @@ services:
     depends_on:
       - compreface-api
       - compreface-admin
+    environment:
+      CLIENT_MAX_BODY_SIZE: 5m
+      PROXY_READ_TIMEOUT: 300s
+      PROXY_CONNECT_TIMEOUT: 75s
     ports:
       - "8000:80"
 
 volumes:
-  remind-postgres:
   compreface-postgres:
