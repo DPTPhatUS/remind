@@ -267,10 +267,10 @@ class LiveSessionOrchestrator:
             return events
 
         for window in windows:
-            self.detector.observe_speech(now_ms=window.started_at_ms)
+            self.detector.observe_speech(now_ms=captured_at_ms)
             events.extend(
                 await self._materialize_detection_events(
-                    self.detector.evaluate(now_ms=window.started_at_ms)
+                    self.detector.evaluate(now_ms=captured_at_ms)
                 )
             )
             if self.audio_transcriber is None or self.detector.state not in {

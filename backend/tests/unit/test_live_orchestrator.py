@@ -270,6 +270,76 @@ async def test_audio_chunk_starts_interaction_and_persists_transcript_when_speec
 
 
 @pytest.mark.asyncio
+async def test_audio_window_emits_candidate_even_when_started_long_before_face() -> None:
+    """Regression: a speech window that began long before the most recent face
+    observation must still produce ``interaction.candidate`` when it closes.
+    The detector has to be evaluated at the *current* chunk timestamp, not at
+    the window's old ``started_at_ms``; otherwise the recent face looks stale
+    and the score drops below the candidate threshold.
+    """
+    orchestrator = LiveSessionOrchestrator(
+        session_id="session-1",
+        speech_detector=FakeSpeechDetector(
+            [True, True]
+            + [False] * 35
+            + [False] * 35
+        ),
+        detector_config=InteractionDetectorConfig(
+            candidate_score=0.45,
+            active_score=0.70,
+            min_candidate_ms=2000,
+            end_silence_ms=8000,
+        ),
+    )
+
+    first_response = await orchestrator.handle_message(
+        {
+            "type": "audio.chunk",
+            "payload": {
+                "content_type": "audio/pcm",
+                "sample_rate_hz": 16000,
+                "channels": 1,
+                "sample_width_bits": 16,
+                "captured_at_ms": 1000,
+                "data": base64.b64encode(PCM_FRAME * 2).decode("ascii"),
+            },
+        }
+    )
+    assert isinstance(first_response, list)
+    assert "interaction.candidate" not in [
+        event["type"] for event in first_response
+    ], "No face observed yet — candidate should not fire on first chunk"
+
+    orchestrator.detector.observe_face(
+        now_ms=4500,
+        face_present=True,
+        recognized=True,
+    )
+
+    second_response = await orchestrator.handle_message(
+        {
+            "type": "audio.chunk",
+            "payload": {
+                "content_type": "audio/pcm",
+                "sample_rate_hz": 16000,
+                "channels": 1,
+                "sample_width_bits": 16,
+                "captured_at_ms": 5000,
+                "data": base64.b64encode(PCM_FRAME * 70).decode("ascii"),
+            },
+        }
+    )
+
+    assert isinstance(second_response, list)
+    assert "interaction.candidate" in [
+        event["type"] for event in second_response
+    ], (
+        "Expected interaction.candidate once face has been observed "
+        f"recently, got: {[event['type'] for event in second_response]}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_active_video_recognition_records_interaction_participant() -> None:
     compreface = FakeCompreFace()
     participants: list[tuple[str, str | None, str | None, float | None, str]] = []
