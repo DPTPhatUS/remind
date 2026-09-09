@@ -181,7 +181,6 @@ async def live_session(websocket: WebSocket, session_id: str) -> None:
         transcript_recorder=record_transcript,
         participant_recorder=record_participant,
     )
-    await manager.send(session_id, orchestrator.ready_message())
     try:
         while True:
             message = await websocket.receive_json()

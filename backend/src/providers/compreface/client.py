@@ -39,17 +39,32 @@ class CompreFaceClient:
         self.api_key = api_key
         self._http = http
 
+    # CompreFace signals "no detectable face" with HTTP 400 + code 28 — that
+    # is its normal "nothing to recognize" response, not a transport error.
+    _NO_FACE_FOUND_CODE = 28
+
     async def recognize(
         self,
         image_bytes: bytes,
         *,
         filename: str = "frame.jpg",
     ) -> list[FaceRecognitionResult]:
-        response = await self._request(
-            "POST",
-            "/api/v1/recognition/recognize",
-            files={"file": (filename, image_bytes, "image/jpeg")},
-        )
+        try:
+            response = await self._request(
+                "POST",
+                "/api/v1/recognition/recognize",
+                files={"file": (filename, image_bytes, "image/jpeg")},
+            )
+        except httpx.HTTPStatusError as exc:
+            body: dict = {}
+            try:
+                body = exc.response.json()
+            except ValueError:
+                pass
+            if exc.response.status_code == 400 and body.get("code") == self._NO_FACE_FOUND_CODE:
+                return []
+            raise
+
         payload = response.json()
         return [self._map_recognition(item) for item in payload.get("result", [])]
 

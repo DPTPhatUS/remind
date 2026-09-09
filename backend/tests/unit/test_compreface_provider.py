@@ -42,6 +42,34 @@ async def test_recognize_maps_compreface_result_to_internal_shape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recognize_returns_empty_when_compreface_signals_no_face() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"message": "No face is found in the given image", "code": 28},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://compreface") as http:
+        client = CompreFaceClient(base_url="http://compreface", api_key="secret", http=http)
+        results = await client.recognize(b"image-bytes", filename="frame.jpg")
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_recognize_raises_on_unrelated_400() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"message": "Bad image format", "code": 7})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://compreface") as http:
+        client = CompreFaceClient(base_url="http://compreface", api_key="secret", http=http)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.recognize(b"image-bytes", filename="frame.jpg")
+
+
+@pytest.mark.asyncio
 async def test_add_face_example_returns_image_id_and_subject() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/recognition/faces"
