@@ -8,6 +8,11 @@ import {
 import type { LiveServerMessage } from "@/lib/api-types"
 import { getLiveWebSocketUrl } from "@/lib/api"
 
+const FRAME_INTERVAL_MS = 150
+const MAX_RECONNECT_ATTEMPTS = 8
+const RECONNECT_BASE_MS = 500
+const RECONNECT_MAX_MS = 8_000
+
 function liveReducer(
   state: ReturnType<typeof createInitialLiveState>,
   events: LiveServerMessage[]
@@ -25,12 +30,94 @@ export function useLiveSession() {
   const streamRef = useRef<MediaStream | null>(null)
   const sequenceRef = useRef({ video: 0, audio: 0 })
   const startedAtRef = useRef<number>(0)
+  const stoppedRef = useRef(false)
+  const reconnectAttemptRef = useRef(0)
+  const reconnectTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    let stopped = false
-    let frameTimer: number | undefined
+    stoppedRef.current = false
+    let rafHandle: number | undefined
     let audioContext: AudioContext | undefined
     let processor: ScriptProcessorNode | undefined
+
+    function sendVideoFrame(mediaStream: MediaStream, sequence: number, startedAt: number) {
+      const socket = socketRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN) return
+
+      const track = mediaStream.getVideoTracks()[0]
+      if (!track) return
+
+      const settings = track.getSettings()
+      const canvas = document.createElement("canvas")
+      canvas.width = settings.width ?? 640
+      canvas.height = settings.height ?? 360
+      const video = document.querySelector("video[data-live-video]") as
+        | HTMLVideoElement
+        | null
+      if (!video) return
+
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const [, imageBase64] = canvas.toDataURL("image/jpeg", 0.75).split(",")
+
+      socket.send(
+        JSON.stringify({
+          type: "video.frame",
+          payload: {
+            image_base64: imageBase64,
+            content_type: "image/jpeg",
+            filename: "frame.jpg",
+            sequence,
+            captured_at_ms: Date.now() - startedAt,
+          },
+        }),
+      )
+    }
+
+    function connectSocket() {
+      const sessionId = crypto.randomUUID()
+      const socket = new WebSocket(getLiveWebSocketUrl(sessionId))
+      socketRef.current = socket
+
+      socket.addEventListener("open", () => {
+        reconnectAttemptRef.current = 0
+        setConnectionState("connected")
+        socket.send(JSON.stringify({ type: "session.start", payload: {} }))
+      })
+
+      socket.addEventListener("message", (message) => {
+        try {
+          dispatch(normalizeLiveEvents(JSON.parse(message.data) as LiveServerMessage))
+        } catch {
+          // swallow malformed payloads so one bad frame doesn't kill the session
+        }
+      })
+
+      socket.addEventListener("close", () => {
+        socketRef.current = null
+        if (stoppedRef.current) return
+        scheduleReconnect()
+      })
+
+      socket.addEventListener("error", () => {
+        // close fires after error; let it drive reconnect
+      })
+    }
+
+    function scheduleReconnect() {
+      if (stoppedRef.current) return
+      if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setConnectionState("error")
+        return
+      }
+      const attempt = reconnectAttemptRef.current
+      reconnectAttemptRef.current += 1
+      const delay = Math.min(
+        RECONNECT_BASE_MS * Math.pow(2, attempt),
+        RECONNECT_MAX_MS,
+      )
+      setConnectionState("connecting")
+      reconnectTimerRef.current = window.setTimeout(connectSocket, delay)
+    }
 
     async function start() {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -43,7 +130,7 @@ export function useLiveSession() {
         video: true,
         audio: true,
       })
-      if (stopped) {
+      if (stoppedRef.current) {
         mediaStream.getTracks().forEach((track) => track.stop())
         return
       }
@@ -51,36 +138,30 @@ export function useLiveSession() {
       setStream(mediaStream)
       streamRef.current = mediaStream
       startedAtRef.current = Date.now()
-      const sessionId = crypto.randomUUID()
-      const socket = new WebSocket(getLiveWebSocketUrl(sessionId))
-      socketRef.current = socket
 
-      socket.addEventListener("open", () => {
-        setConnectionState("connected")
-        socket.send(JSON.stringify({ type: "session.start", payload: {} }))
-      })
-      socket.addEventListener("message", (message) => {
-        dispatch(normalizeLiveEvents(JSON.parse(message.data) as LiveServerMessage))
-      })
-      socket.addEventListener("error", () => setConnectionState("error"))
-      socket.addEventListener("close", () => {
-        if (!stopped) setConnectionState("idle")
-      })
+      connectSocket()
 
-      frameTimer = window.setInterval(() => {
-        sendVideoFrame(
-          socket,
-          mediaStream,
-          sequenceRef.current.video++,
-          startedAtRef.current
-        )
-      }, 1000)
+      let lastFrameAt = 0
+      const tick = (now: number) => {
+        if (stoppedRef.current) return
+        if (now - lastFrameAt >= FRAME_INTERVAL_MS) {
+          lastFrameAt = now
+          sendVideoFrame(
+            mediaStream,
+            sequenceRef.current.video++,
+            startedAtRef.current,
+          )
+        }
+        rafHandle = requestAnimationFrame(tick)
+      }
+      rafHandle = requestAnimationFrame(tick)
 
       audioContext = new AudioContext({ sampleRate: 16_000 })
       const source = audioContext.createMediaStreamSource(mediaStream)
       processor = audioContext.createScriptProcessor(2048, 1, 1)
       processor.onaudioprocess = (event) => {
-        if (socket.readyState !== WebSocket.OPEN) return
+        const socket = socketRef.current
+        if (!socket || socket.readyState !== WebSocket.OPEN) return
         const pcm = floatTo16BitPcm(event.inputBuffer.getChannelData(0))
         socket.send(
           JSON.stringify({
@@ -94,7 +175,7 @@ export function useLiveSession() {
               captured_at_ms: Date.now() - startedAtRef.current,
               data: arrayBufferToBase64(pcm.buffer),
             },
-          })
+          }),
         )
       }
       source.connect(processor)
@@ -103,55 +184,23 @@ export function useLiveSession() {
     start().catch(() => setConnectionState("error"))
 
     return () => {
-      stopped = true
-      if (frameTimer !== undefined) window.clearInterval(frameTimer)
+      stoppedRef.current = true
+      if (rafHandle !== undefined) cancelAnimationFrame(rafHandle)
+      if (reconnectTimerRef.current !== undefined)
+        window.clearTimeout(reconnectTimerRef.current)
       processor?.disconnect()
       void audioContext?.close()
-      socketRef.current?.send(JSON.stringify({ type: "session.stop", payload: {} }))
-      socketRef.current?.close()
+      const socket = socketRef.current
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "session.stop", payload: {} }))
+      }
+      socket?.close()
       streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
   }, [])
 
   return { state, stream, connectionState }
-}
-
-function sendVideoFrame(
-  socket: WebSocket,
-  stream: MediaStream,
-  sequence: number,
-  startedAt: number
-) {
-  if (socket.readyState !== WebSocket.OPEN) return
-
-  const track = stream.getVideoTracks()[0]
-  if (!track) return
-
-  const settings = track.getSettings()
-  const canvas = document.createElement("canvas")
-  canvas.width = settings.width ?? 640
-  canvas.height = settings.height ?? 360
-  const video = document.querySelector("video[data-live-video]") as
-    | HTMLVideoElement
-    | null
-  if (!video) return
-
-  canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height)
-  const [, imageBase64] = canvas.toDataURL("image/jpeg", 0.75).split(",")
-
-  socket.send(
-    JSON.stringify({
-      type: "video.frame",
-      payload: {
-        image_base64: imageBase64,
-        content_type: "image/jpeg",
-        filename: "frame.jpg",
-        sequence,
-        captured_at_ms: Date.now() - startedAt,
-      },
-    })
-  )
 }
 
 function floatTo16BitPcm(input: Float32Array) {

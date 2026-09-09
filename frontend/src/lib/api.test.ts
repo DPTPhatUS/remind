@@ -12,6 +12,7 @@ describe("api client", () => {
   })
 
   it("calls fetch without an Authorization header", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "http://localhost:8000/api/v1")
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
