@@ -20,7 +20,9 @@ class FakeSpeechDetector:
 
 
 def test_live_detection_settings_have_safe_defaults() -> None:
-    settings = Settings()
+    # _env_file=None keeps this test pinning the dataclass defaults; without
+    # it the local .env silently overrides and the assertion drifts.
+    settings = Settings(_env_file=None)
 
     assert settings.live_frame_sample_interval_ms == 500
     assert settings.live_interaction_candidate_score == 0.45

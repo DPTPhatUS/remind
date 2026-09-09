@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -79,6 +80,7 @@ class LiveSessionOrchestrator:
         self.participant_recorder = participant_recorder
         self.active_interaction_id: str | None = None
         self._recorded_participants: set[tuple[str, str | None, str | None]] = set()
+        self._background_tasks: set[asyncio.Task] = set()
 
     def ready_message(self) -> dict:
         return SessionReadyMessage(payload={"session_id": self.session_id}).model_dump()
@@ -118,6 +120,10 @@ class LiveSessionOrchestrator:
         ).model_dump()
 
     async def _handle_session_stop(self) -> dict | None:
+        # Drain in-flight transcript tasks so DB writes land before the
+        # socket closes — otherwise session.stop races with persistence.
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
         if self.active_interaction_id is None:
             return None
         interaction_id = self.active_interaction_id
@@ -278,24 +284,61 @@ class LiveSessionOrchestrator:
                 "active",
             }:
                 continue
-            transcript = await self.audio_transcriber(window.data, content_type)
+            # OpenAI transcription + DB persistence + extraction + embedding
+            # take 500-1500ms each. Awaiting in the hot loop stalls the
+            # message handler and drops fps below CompreFace's ceiling, so
+            # transcription runs as a background task. Note: the immediate
+            # transcript.received event therefore has empty text — the real
+            # text lands via the recorder (out of band to the wire).
+            self._schedule_transcript_processing(
+                window=window,
+                content_type=content_type,
+            )
             transcript_payload = {
                 "content_type": content_type,
                 "size_bytes": len(window.data),
-                "text": transcript,
+                "text": "",
                 "started_at_ms": window.started_at_ms,
                 "ended_at_ms": window.ended_at_ms,
                 "interaction_id": self.active_interaction_id,
             }
             events.append({"type": "transcript.received", "payload": transcript_payload})
-            if self.active_interaction_id is not None and self.transcript_recorder is not None:
-                await self.transcript_recorder(
-                    self.active_interaction_id,
-                    transcript,
-                    window.started_at_ms,
-                    window.ended_at_ms,
-                )
         return events
+
+    def _schedule_transcript_processing(
+        self,
+        *,
+        window,
+        content_type: str,
+    ) -> None:
+        interaction_id = self.active_interaction_id
+        transcriber = self.audio_transcriber
+        recorder = self.transcript_recorder
+
+        async def _run() -> None:
+            if transcriber is None:
+                return
+            try:
+                transcript = await transcriber(window.data, content_type)
+            except Exception:
+                return
+            if recorder is not None and interaction_id is not None:
+                try:
+                    await recorder(
+                        interaction_id,
+                        transcript,
+                        window.started_at_ms,
+                        window.ended_at_ms,
+                    )
+                except Exception:
+                    pass
+
+        self._spawn_background(_run())
+
+    def _spawn_background(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _materialize_detection_events(
         self,

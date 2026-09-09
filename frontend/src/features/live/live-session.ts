@@ -8,7 +8,10 @@ import {
 import type { LiveServerMessage } from "@/lib/api-types"
 import { getLiveWebSocketUrl } from "@/lib/api"
 
-const FRAME_INTERVAL_MS = 150
+const FRAME_INTERVAL_MS = 167
+const FRAME_TARGET_WIDTH = 480
+const FRAME_TARGET_HEIGHT = 270
+const FRAME_JPEG_QUALITY = 0.6
 const MAX_RECONNECT_ATTEMPTS = 8
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 8_000
@@ -39,25 +42,34 @@ export function useLiveSession() {
     let rafHandle: number | undefined
     let audioContext: AudioContext | undefined
     let processor: ScriptProcessorNode | undefined
+    const offscreen = document.createElement("canvas")
+    offscreen.width = FRAME_TARGET_WIDTH
+    offscreen.height = FRAME_TARGET_HEIGHT
+    const offscreenCtx = offscreen.getContext("2d", { alpha: false })
 
     function sendVideoFrame(mediaStream: MediaStream, sequence: number, startedAt: number) {
       const socket = socketRef.current
-      if (!socket || socket.readyState !== WebSocket.OPEN) return
+      if (!socket || socket.readyState !== WebSocket.OPEN || !offscreenCtx) return
 
-      const track = mediaStream.getVideoTracks()[0]
-      if (!track) return
-
-      const settings = track.getSettings()
-      const canvas = document.createElement("canvas")
-      canvas.width = settings.width ?? 640
-      canvas.height = settings.height ?? 360
       const video = document.querySelector("video[data-live-video]") as
         | HTMLVideoElement
         | null
-      if (!video) return
+      if (!video || video.readyState < 2) return
 
-      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height)
-      const [, imageBase64] = canvas.toDataURL("image/jpeg", 0.75).split(",")
+      offscreenCtx.drawImage(
+        video,
+        0,
+        0,
+        video.videoWidth || FRAME_TARGET_WIDTH,
+        video.videoHeight || FRAME_TARGET_HEIGHT,
+        0,
+        0,
+        FRAME_TARGET_WIDTH,
+        FRAME_TARGET_HEIGHT,
+      )
+      const dataUrl = offscreen.toDataURL("image/jpeg", FRAME_JPEG_QUALITY)
+      const commaIdx = dataUrl.indexOf(",")
+      const imageBase64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl
 
       socket.send(
         JSON.stringify({
@@ -71,6 +83,7 @@ export function useLiveSession() {
           },
         }),
       )
+      void mediaStream
     }
 
     function connectSocket() {
@@ -127,7 +140,10 @@ export function useLiveSession() {
 
       setConnectionState("connecting")
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: {
+          width: { ideal: FRAME_TARGET_WIDTH },
+          height: { ideal: FRAME_TARGET_HEIGHT },
+        },
         audio: true,
       })
       if (stoppedRef.current) {
@@ -173,7 +189,7 @@ export function useLiveSession() {
               sample_width_bits: 16,
               sequence: sequenceRef.current.audio++,
               captured_at_ms: Date.now() - startedAtRef.current,
-              data: arrayBufferToBase64(pcm.buffer),
+              data: bytesToBase64(new Uint8Array(pcm.buffer)),
             },
           }),
         )
@@ -212,11 +228,11 @@ function floatTo16BitPcm(input: Float32Array) {
   return output
 }
 
-function arrayBufferToBase64(buffer: ArrayBufferLike) {
-  const bytes = new Uint8Array(buffer)
+const BASE64_CHUNK = 0x8000
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = ""
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte)
-  })
+  for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + BASE64_CHUNK))
+  }
   return window.btoa(binary)
 }

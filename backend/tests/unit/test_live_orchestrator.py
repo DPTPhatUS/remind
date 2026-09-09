@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 import pytest
@@ -266,6 +267,9 @@ async def test_audio_chunk_starts_interaction_and_persists_transcript_when_speec
     assert second_response[1]["payload"]["interaction_id"] == "interaction-1"
     assert second_response[2]["payload"]["interaction_id"] == "interaction-1"
     assert started and started[0] >= 0.70
+    # Transcription now runs as a background task; drain it before asserting.
+    if orchestrator._background_tasks:
+        await asyncio.gather(*orchestrator._background_tasks, return_exceptions=True)
     assert transcripts == [("interaction-1", "Hi, I am David.", 1740, 1780)]
 
 
