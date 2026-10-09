@@ -1,6 +1,14 @@
-import sys
-from pathlib import Path
+import pytest
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+from remind.database import Database
+from remind.memory.store import MemoryStore
+
+
+@pytest.fixture
+async def store(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.create_schema()
+    store = MemoryStore(db)
+    await store.ensure_patient()
+    yield store
+    await db.close()

@@ -32,3 +32,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+# Browser test artifacts
+/test-results/
+/playwright-report/

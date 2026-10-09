@@ -1,82 +1,168 @@
-import { useEffect, useRef } from "react"
-import { UserRoundIcon, WifiIcon } from "lucide-react"
-
-import { Badge } from "@/components/ui/badge"
-import { useLiveSession } from "@/features/live/live-session"
+import { useState } from "react";
+import { useLiveSession } from "@/features/live/session";
 
 export function LiveAssistantPage() {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const { state, stream, connectionState } = useLiveSession()
-
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream
-    }
-  }, [stream])
-
-  const title = state.reminder?.title ?? "Waiting for a meaningful interaction"
-  const lines =
-    state.reminder?.lines.length
-      ? state.reminder.lines
-      : ["The assistant will stay quiet until recognition or conversation context matters."]
-
+  const {
+    attachVideo,
+    status,
+    error,
+    memoryStatus,
+    jobsStatus,
+    uploadPaused,
+    retryUpload,
+    downloadClip,
+    exportTrace,
+    retryJobs,
+    tracks,
+    diagnostics,
+    start,
+    stop,
+  } = useLiveSession();
+  const [aspect, setAspect] = useState(16 / 9);
   return (
-    <main className="min-h-svh bg-background text-foreground">
-      <section className="relative flex min-h-svh flex-col overflow-hidden bg-foreground text-background">
-        <header className="absolute inset-x-0 top-0 flex items-center justify-between p-4">
-          <div>
-            <h1 className="text-lg font-semibold tracking-normal">Live assistant</h1>
-            <p className="text-sm text-background/70">Visual-first memory support</p>
-          </div>
-        </header>
-
-        <video
-          ref={videoRef}
-          data-live-video
-          autoPlay
-          muted
-          playsInline
-          className="absolute inset-0 size-full object-cover opacity-70"
-        />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0,transparent_45%,color-mix(in_oklch,var(--foreground),black_18%)_100%)]" />
-
-        <div className="relative mt-24 flex flex-1 items-start justify-center px-6">
-          <div className="rounded-full border border-background/30 px-4 py-2 text-sm text-background/80">
-            {state.interaction.status === "active"
-              ? "Interaction active"
-              : state.interaction.status === "candidate"
-                ? "Possible interaction"
-                : "Monitoring quietly"}
-          </div>
+    <main className="live-page">
+      <div className="live-toolbar">
+        <div>
+          <h1>Your view</h1>
+          <p>People and moments, remembered.</p>
         </div>
-
-        <div className="absolute right-4 bottom-40 flex flex-col gap-2">
-          {state.recognitions.slice(1).map((recognition) => (
-            <Badge key={recognition.subject} variant="secondary">
-              <UserRoundIcon data-icon="inline-start" />
-              {recognition.label}
-            </Badge>
+        {status === "idle" ? (
+          <button onClick={() => void start()}>Start camera</button>
+        ) : (
+          <button
+            className="secondary"
+            disabled={status === "saving"}
+            onClick={() => void stop()}
+          >
+            {status === "saving" ? "Saving…" : "Stop camera"}
+          </button>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <div className="camera-stage">
+        <div
+          className="camera-frame"
+          style={{ aspectRatio: aspect, width: `min(100%, ${72 * aspect}vh)` }}
+        >
+          <video
+            onLoadedMetadata={(event) =>
+              setAspect(
+                event.currentTarget.videoWidth /
+                  event.currentTarget.videoHeight,
+              )
+            }
+            ref={attachVideo}
+            autoPlay
+            playsInline
+            muted
+            aria-label="Live camera view"
+          />
+          {status === "idle" && (
+            <div className="camera-empty">
+              <span className="camera-symbol">◎</span>
+              <h2>Keep familiar faces close.</h2>
+              <p>
+                Start the camera to recognize people and remember conversations.
+              </p>
+            </div>
+          )}
+          {tracks.map((track) => (
+            <div
+              key={track.track_id}
+              className={`face-box ${track.person_id ? "known" : ""}`}
+              style={{
+                left: `${track.box[0] * 100}%`,
+                top: `${track.box[1] * 100}%`,
+                width: `${track.box[2] * 100}%`,
+                height: `${track.box[3] * 100}%`,
+              }}
+            >
+              <div
+                className="face-card"
+                style={{
+                  top: track.box[1] > 0.3 ? "auto" : "100%",
+                  bottom: track.box[1] > 0.3 ? "100%" : "auto",
+                  left: track.box[0] > 0.65 ? "auto" : 0,
+                  right: track.box[0] > 0.65 ? 0 : "auto",
+                }}
+              >
+                <strong>
+                  {track.memory?.name ??
+                    (track.person_id
+                      ? "Someone you’ve met"
+                      : track.state === "ambiguous"
+                        ? "Still identifying…"
+                        : "Getting to know this person")}
+                </strong>
+                {track.memory?.relationship && (
+                  <span>{track.memory.relationship}</span>
+                )}
+                {track.memory?.age && (
+                  <span>Age stated: {track.memory.age}</span>
+                )}
+                {track.memory?.last_encounter && (
+                  <p>
+                    <small>
+                      Last met{" "}
+                      {new Date(
+                        track.memory.last_encounter.started_at,
+                      ).toLocaleDateString()}
+                    </small>
+                    {track.memory.last_encounter.summary ??
+                      "No conversation summary recorded."}
+                  </p>
+                )}
+              </div>
+            </div>
           ))}
         </div>
-
-        <section className="absolute right-4 bottom-4 left-4 rounded-xl border border-background/15 bg-background p-4 text-foreground shadow-2xl md:right-auto md:left-1/2 md:w-[min(560px,calc(100%-2rem))] md:-translate-x-1/2">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">Patient-safe</Badge>
-              <Badge variant="outline">
-                <WifiIcon data-icon="inline-start" />
-                {connectionState}
-              </Badge>
-            </div>
-            <h2 className="text-2xl font-semibold tracking-normal">{title}</h2>
-            {lines.map((line) => (
-              <p key={line} className="text-base text-muted-foreground">
-                {line}
-              </p>
-            ))}
-          </div>
-        </section>
-      </section>
+      </div>
+      <div className="live-footer">
+        <span className={`status-dot ${status === "live" ? "active" : ""}`} />
+        {status === "live"
+          ? "Camera is live"
+          : status === "starting"
+            ? "Starting camera…"
+            : "Camera is off"}
+        <span>
+          {memoryStatus} {jobsStatus}
+        </span>
+      </div>
+      {uploadPaused && (
+        <div className="upload-recovery">
+          <button onClick={() => void retryUpload()}>
+            Retry conversation upload
+          </button>{" "}
+          <button className="secondary" onClick={downloadClip}>
+            Download unsaved clip
+          </button>
+        </div>
+      )}
+      {jobsStatus.includes("could not") && (
+        <button className="secondary" onClick={() => void retryJobs()}>
+          Retry failed conversations
+        </button>
+      )}
+      <details className="diagnostics">
+        <summary>Performance and memory status</summary>
+        <p>
+          {diagnostics.fps.toFixed(1)} processed fps ·{" "}
+          {diagnostics.latency.toFixed(0)} ms result age ·{" "}
+          {diagnostics.processing.toFixed(0)} ms processing ·{" "}
+          {diagnostics.dropped} replaced frames
+        </p>
+        <p>
+          Recognition and speaker thresholds need calibration on your encounter
+          recordings.
+        </p>
+        <button className="secondary" onClick={exportTrace}>
+          Download performance trace
+        </button>
+      </details>
     </main>
-  )
+  );
 }

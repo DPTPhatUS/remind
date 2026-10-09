@@ -1,0 +1,78 @@
+{
+  "vision": {
+    "unique_frames": 431,
+    "complete_windows": 1,
+    "passing_windows": 1,
+    "fps_gate_pass": true,
+    "processing_p95_ms": 42.94116099981693,
+    "acceptance_complete": false,
+    "note": "Component timings only. Browser latency, identity/fact accuracy and 30-minute acceptance require separate labeled runs."
+  },
+  "latency": {
+    "count": 431,
+    "p50_ms": 66.39999999990687,
+    "p95_ms": 85.05000000004657,
+    "p99_ms": 92.57000000006519,
+    "max_ms": 115.79999999981374
+  },
+  "identification": {
+    "known_trials": 0,
+    "correct_known": 0,
+    "wrong_known": 0,
+    "unknown_trials": 0,
+    "false_known": 0,
+    "zero_error_upper_95": null
+  },
+  "recognition_coverage": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "identity_latency": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "enrollment": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "duplicate_enrollments": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "fact_precision": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "subject_precision": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "fact_coverage": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "memory_latency": {
+    "count": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "recall": {
+    "numerator": 0,
+    "denominator": 0,
+    "rate": null
+  },
+  "named_switches": null,
+  "acceptance_complete": false,
+  "note": "Review scenario coverage, held-out splits, independence, duration and all gates in docs/testing/realtime-memory-evaluation.md; missing labels are not success."
+}
