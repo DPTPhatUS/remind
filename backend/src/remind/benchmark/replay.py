@@ -82,7 +82,13 @@ def replay(path, settings, mode):
         "mode": mode,
         "model_backend": "real OpenCV CPU",
         "hardware": platform.platform(),
-        "model_hashes": {k: v["sha256"] for k, v in registry.models.items()},
+        "model_hashes": {
+            name: (
+                {item["file"]: item["sha256"] for item in model["files"]}
+                if "files" in model else model["sha256"]
+            )
+            for name, model in registry.models.items()
+        },
         "identification": identification,
         "dataset_sha256": manifest["sha256"],
         "vision_threads": settings.vision_threads,

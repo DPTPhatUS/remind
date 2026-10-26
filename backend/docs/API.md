@@ -1,46 +1,58 @@
 # Remind local API
 
-Base: `/api`. Bind the backend to `127.0.0.1`. Allowed origins are localhost
-ports 5173 and 8000 by default. A random session generation is the live capture
-capability. Only one active capture session is allowed; other tabs receive 409.
+Bind to `127.0.0.1`; all routes use `/api`. Only one capture session runs at a
+time. Face templates and user voice representations are never returned publicly.
 
-| Method | Path | Purpose |
+| Method | Path | Contract |
 | --- | --- | --- |
-| GET | `/health` | Vision readiness, memory/speaker status, calibration status |
-| GET | `/people` | Person records, no template vectors |
-| GET | `/people/{id}` | Fields, sourced facts, completed encounters |
-| GET | `/people/{id}/thumbnail` | Local JPEG thumbnail, no-cache |
-| PATCH | `/people/{id}` | `{version, fields: {name, relationship, age, notes}}`; stale version returns 409 |
-| DELETE | `/people/{id}` | Forget templates, facts and related shared text; cancel stale jobs |
-| GET | `/jobs` | Pending/running/failed job status and attempts |
-| POST | `/session` | Create owner; returns `{generation, memory_available}` |
-| POST | `/session/{generation}/stop` | Close encounter; jobs remain durable |
-| POST | `/live/{generation}/clips?metadata=...` | Binary independently decodable WebM, ≤16 MiB |
-| WS | `/live/{generation}/vision` | Binary camera packets, JSON face results |
+| GET | `/health` | Vision, cloud, voice-model/reference readiness and profile-learning availability |
+| GET | `/user/voice` | `ready,reference_saved,model_available,error,version,model,sample_count,updated_at` |
+| POST | `/user/voice` | JSON `{samples:[base64,...]}`, three to five recordings, 3–20 seconds each; returns status |
+| DELETE | `/user/voice` | Removes voice reference, increments version, invalidates pending role-dependent work |
+| GET | `/people` | Person identity fields, profile summary, up to three current highlights |
+| GET | `/people/{id}` | Person plus structured sourced facts and completed encounters |
+| GET | `/people/{id}/thumbnail` | Local JPEG, no-store |
+| PATCH | `/people/{id}` | `{version,fields:{name,relationship,age,notes}}`; manual authority, stale version409 |
+| PATCH | `/people/{id}/facts/{fact}` | `{version,value}`; manual accepted correction, retains history |
+| DELETE | `/people/{id}/facts/{fact}` | JSON `{version}`; dismisses fact and suppresses automatic recurrence |
+| DELETE | `/people/{id}` | Forgets sources, derived memories, templates; invalidates jobs and active timeline |
+| GET | `/jobs` | Pending/running/failed status, attempts, error |
+| POST | `/jobs/{id}/retry` | Retries retained failed work; cancelled/forgotten work409 |
+| POST | `/session` | `generation,memory_available,voice_ready,profile_learning_available` |
+| POST | `/session/{generation}/stop` | Closes encounter; background processing remains durable |
+| POST | `/live/{generation}/clips?metadata=...` | Binary independently decodable WebM, at most16MiB |
+| WS | `/live/{generation}/vision` | Camera packets and normalized face results |
 
-Clip query metadata is URL-encoded JSON: `window_id`, `start_ms`, `end_ms`.
-Times use the browser's monotonic performance timeline, identical to vision.
-Clips carry audio/video in the same container. Jobs snapshot participant IDs and
-versions before the upload is acknowledged. A clip with no established
-participants is ignored explicitly. Memory queue capacity errors are visible.
+Enrollment accepts raw base64 (no data-URL prefix), max4MiB per sample and16MiB
+request. Media is decoded in memory and discarded after enrollment. Silence,
+insufficient speech, inconsistent samples, clipping or malformed media returns422.
+Unavailable local models/dependencies returns503. Failed replacement preserves the
+previous reference. Version increments prevent delayed writes using an old reference.
+
+Facts expose `id,subject,category,predicate,value,temporal_status,valid_from,valid_to,
+status,manual,evidence,created_at,updated_at`. Evidence is a structured array of
+`{segment_id,quote}`; IDs are globally scoped within persisted dialogue.
+The subject is `visitor` or a related subject scoped to that visitor. Categories
+cover identity, relationship, age, work, education, residence, interests,
+preferences, routines, family, experiences, plans and other background.
+Temporal states are current/past/planned; lifecycle states are
+accepted/conflict/superseded/dismissed. Profile summaries/highlights exclude
+unresolved, past, planned, and related-person facts as established current identity.
+
+Clip query metadata is URL-encoded JSON `{window_id,start_ms,end_ms}` on the
+browser's monotonic clock, shared with vision. Upload snapshots the original
+visitor/encounter, participant versions, voice-reference version and face timeline.
+Clips spanning different encounters are not assigned to the current visitor.
+Multiple/unknown faces make overlapping speech ineligible for personal learning.
+Voice roles user/visitor/uncertain are computed within each clip, never inferred
+from reused anonymous speaker labels across clips.
 
 Vision packet: uint32 big-endian header length, UTF-8 JSON header, JPEG bytes.
-Header: `{version: 1, generation, sequence, capture_ms, width, height}`.
-Header limit 8 KiB, JPEG limit 2 MiB. Out-of-order and old-generation packets
-are discarded. The server keeps one running and one newest waiting frame.
+Header `{version:1,generation,sequence,capture_ms,width,height}`, max8KiB;
+JPEG max2MiB. Server queue keeps one running and one newest waiting frame.
+Results include normalized boxes, identities and memory cards. The browser rejects
+results older than500ms and expires missing boxes. Cards refresh after memory commits.
 
-Result: `{type: 'vision', generation, sequence, capture_ms, tracks,
-processing_ms, processed_fps, dropped}`. Each track contains `track_id`,
-`person_id` (nullable), `state`, normalized `[x,y,width,height]`, and a memory
-card. State is observing/unknown/ambiguous/remembered. No raw face embeddings
-are sent to the browser. Result timestamps allow same-clock capture-to-display
-age measurement. The browser rejects results older than 500 ms and expires
-missing boxes. `processed_fps` is a session-average fresh completion count,
-not a 30-minute acceptance result.
-
-No standalone patient, relationship graph, semantic-search, media CRUD or
-caregiver APIs remain.
-
-`POST /api/jobs/{id}/retry` retries a terminal failed job whose encounter has not been forgotten. Cancelled jobs cannot be retried.
-
-Final-clip upload retries remain valid for two minutes after Stop, provided no new session has replaced that generation. Forget invalidates the saved timeline and affected encounters.
+The final clip can retry for two minutes after Stop until a new generation
+replaces the capture capability. There are no legacy API/schema compatibility
+contracts. No patient selector, relationship graph service, or approval queue.

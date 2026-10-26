@@ -11,7 +11,9 @@ npm run dev -- --host 127.0.0.1
 Vite proxies `/api` HTTP and WebSocket traffic to `http://127.0.0.1:8000`.
 Use localhost or HTTPS for camera access. Start/Stop owns capture explicitly.
 The preview is direct camera video; fresh backend face results produce overlays.
-People provides remembered profiles, encounter history, correction and deletion.
+Voice setup lets a helper save the user reference. People provides categorized
+facts, evidence, temporal history, optional corrections and forgetting. Live
+reminders show up to three established highlights and the previous encounter.
 
 ```bash
 npm test

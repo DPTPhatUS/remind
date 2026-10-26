@@ -23,14 +23,16 @@ test("enroll, correct, stop, return, and forget a face", async ({
   request,
 }) => {
   const errors: string[] = [];
+  const consoleErrors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
   await page.goto("/");
   await expect(page).toHaveTitle(/Remind/);
   await page.getByRole("button", { name: "Start camera" }).click();
   await expect(page.locator(".face-box.known")).toBeVisible({ timeout: 20000 });
-  await expect(
-    page.getByText("Someone you’ve met", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".face-card strong")).toHaveText("Someone you’ve met");
   await page.screenshot({ path: "/tmp/remind-live.png" });
   await page.getByRole("button", { name: "Stop camera" }).click();
   await expect(
@@ -41,6 +43,7 @@ test("enroll, correct, stop, return, and forget a face", async ({
     .getByRole("link", { name: /Name not learned yet/ })
     .first()
     .click();
+  await page.getByText("Correct profile details", { exact: true }).click();
   await page.getByLabel("name", { exact: true }).fill("Anna");
   await page.getByLabel("relationship", { exact: true }).fill("Daughter");
   await page.getByRole("button", { name: "Save corrections" }).click();
@@ -63,9 +66,16 @@ test("enroll, correct, stop, return, and forget a face", async ({
   const people = await (await request.get("/api/people")).json();
   for (const person of people) await request.delete(`/api/people/${person.id}`);
   expect(errors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
 });
 
 test("export a real-model camera timing trace", async ({ page }) => {
+  const errors: string[] = [];
+  const consoleErrors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "Start camera" }).click();
   await expect(page.locator(".face-box.known")).toBeVisible({ timeout: 15000 });
@@ -83,4 +93,6 @@ test("export a real-model camera timing trace", async ({ page }) => {
     .click();
   const download = await downloadPromise;
   await download.saveAs("../backend/.local/reports/browser-smoke-trace.json");
+  expect(errors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
 });

@@ -1,7 +1,9 @@
 # Remind
 
-A local, single-patient memory assistant. Open the live camera view, meet someone,
-and return later to see their remembered information beside their face.
+A local memory assistant for English one-on-one conversations. Remind recognizes
+the visitor automatically, remembers supported information from the conversation,
+and shows a short reminder when that person returns. No person selection or fact
+approval is required during normal encounters.
 
 ## Run
 
@@ -21,57 +23,76 @@ npm ci
 npm run dev -- --host 127.0.0.1
 ```
 
-Open <http://127.0.0.1:5173> and choose **Start camera**. Allow camera and
-microphone access. **Stop camera** releases both devices and flushes the last
-conversation clip. Live and People are the only app sections.
+Open <http://127.0.0.1:5173>. A helper first opens **Voice setup**, records three
+short samples containing only the user's voice, and saves the reference. Samples
+must contain clear speech from the same person. The reference can be replaced or
+removed later. Raw setup recordings are decoded in memory and are not saved.
 
-The model installer downloads pinned YuNet, SFace and Light-ASD weights and
-verifies their SHA-256 hashes. No face-service container, PostgreSQL, Redis or
-vector database is required. A fresh SQLite database is created automatically
-at `backend/.local/remind.sqlite3`. Existing legacy databases are not migrated
-or deleted. Keep the backend on localhost; remote hosting is outside this version.
+Then choose **Start camera** and allow camera and microphone access. Face
+recognition and enrollment are automatic. **Stop camera** releases both devices
+and flushes the final clip. Keep the backend on localhost.
 
-## Memory behavior
+## How learning works
 
-- A stable, clear, sufficiently close unfamiliar face can be enrolled after
-  two seconds and five usable observations. Names are optional.
-- Returning faces need repeated agreement and separation from the next-best
-  person. Uncertain identity produces no named reminder.
-- Conversations are captured in bounded synchronized audio/video clips. Audio
-  goes to OpenAI for speaker-labeled transcription; local Light-ASD supplies
-  face/speaker evidence. Structured fact extraction receives the transcript
-  and supported subject mapping. It does not choose face identities.
-- Unassigned speech can contribute to an encounter summary but cannot fill a
-  person's name, age or relationship. Missing speaker models degrade to that
-  behavior explicitly. No age or relationship is estimated from appearance.
-  Automatic profile fields currently require direct English self-statements
-  such as “My name is Anna” and “I am your daughter”; richer details remain in
-  the encounter summary when their subject cannot be supported.
-- The card shows the previous completed encounter, excluding the current one.
-- People lets you inspect sources, correct fields and forget someone. Forget
-  also removes related shared-conversation text and invalidates pending jobs.
+- Clear unfamiliar faces are enrolled after sustained observation. Returning
+  faces require repeated matching agreement. Names are learned from conversation
+  or can be corrected in People; there is no name-selection step.
+- Local CPU SpeechBrain ECAPA-TDNN compares speech with the saved user reference.
+  Clear non-user speech is assumed to belong to the single visible visitor.
+  Silence, overlapping speech, very short speech, and uncertain matches cannot
+  establish personal facts. Anonymous transcription labels are local to each clip.
+- Multiple faces or an uncertain face suspend profile learning. Changing visitors
+  starts a separate encounter. Delayed clips retain their capture-time identity.
+  Mouth analysis and Light-ASD are not used.
+- OpenAI provides English speaker-labelled transcription, contextual fact
+  extraction, and a separate evidence-verification pass. Recent dialogue spans
+  clip boundaries. Questions alone do not establish their premises: facts require
+  the visitor's own statement or clear confirmation.
+- The speaker and the subject are distinct. "My brother teaches" describes the
+  visitor's brother, not the visitor's job. Mentioned people stay associated with
+  that visitor; names in a transcript do not create or merge face profiles.
+- Individual sourced facts cover background, work, education, residence,
+  interests, preferences, routines, relatives, experiences, and plans. Compatible
+  facts accumulate; repeats add evidence. Explicit corrections and changes
+  preserve history. Unexplained contradictions remain unresolved. Plans never
+  become completed events merely because their date passes.
+- The live reminder contains identity, up to three established current highlights,
+  and the previous completed encounter. People contains the fuller profile,
+  temporal details, source quotes, and optional correction/removal controls.
+- Without an API key, face recognition still works. Without a usable user voice
+  reference, conversation summaries can be saved but profiles are not updated.
 
-The cloud account is the existing OpenAI API service. Face templates remain
-local. Audio and transcript text leave the device when cloud processing is on.
-Temporary clips are local, capped at 1 GiB and expired after 24 hours (both
-configurable). Failed uploads pause capture and retain one clip in the current
-tab for retry or download. Processing failures can be retried from the live view. Stop
-recording whenever you do not want an interaction recorded.
+Manual corrections take precedence. Forgetting a person removes associated
+source material and derived memories and invalidates pending work. Replacing or
+removing the voice reference invalidates pending role-dependent processing.
 
-## Current validation limits
+## Data and operating assumptions
 
-This is an engineering prototype. Recognition and speaker thresholds are
-uncalibrated defaults. Unit tests and repeated-image speed tests do not establish
-real-world identification or personal-fact accuracy. The full 30-minute,
-1–3-person, ≥10 processed-fps acceptance run and labeled encounter evaluation
-must be recorded separately. [Measured results](docs/testing/reports/2026-10-09-implementation.md)
-include a short 25 fps browser smoke with an 85 ms p95 display-time bound. See the [evaluation strategy](docs/testing/realtime-memory-evaluation.md)
-and [execution record](docs/superpowers/execution/progress.md).
+SQLite, face templates, and user voice representations remain local at
+`backend/.local/`. The installer downloads pinned, checksum-verified YuNet,
+SFace, and ECAPA model assets. Audio is sent to OpenAI for transcription;
+transcript context and candidate facts are sent for extraction and verification.
 
-The initial runtime uses CPU OpenCV and an optional CPU PyTorch wheel. Your
-RTX 2050 is available, but using CUDA for speaker inference requires a compatible
-CUDA PyTorch installation and `REMIND_SPEAKER_DEVICE=cuda`. It is not required
-for local face recognition. The normal OpenCV wheel is CPU-only.
+Temporary conversation clips default to a 1 GiB cap and 24-hour expiry. Failed
+uploads pause capture and retain one clip in the current tab for retry or download.
+Failed processing can be retried from Live. The existing bounded recording
+transport is retained, including brief upload gaps; interrupted sentences may be
+incomplete. Stop recording when an interaction should not be recorded.
+
+This version assumes one visitor and a quiet conversation. A television or another
+off-screen voice can be mistaken for the visitor. Voice and face operating points
+are uncalibrated defaults, not probabilities. Automated fixtures and public-audio
+model smokes do not establish real-world recognition or personal-fact accuracy.
+
+The schema is rewritten in place, with no migration or older-version support.
+Development data from the previous schema must be reset once before running this
+rewrite. Normal restarts preserve all newly learned data. Startup never
+intentionally wipes current memories.
+
+Provider models remain configurable. The existing defaults require a separate
+migration before the published GPT-4.1 mini (January 14, 2027) and
+gpt-4o-transcribe-diarize (February 26, 2027) shutdowns. Changing transcription
+models must preserve speaker labels and timestamps; it is not just a model-ID swap.
 
 ## Verify
 
@@ -90,6 +111,6 @@ npm run build
 npm run lint
 ```
 
-Browser test instructions and recorded-media benchmarks are in
-[benchmarks/README.md](benchmarks/README.md). The approved [design](docs/superpowers/specs/2026-10-08-realtime-memory-design.md)
-and [plan](docs/superpowers/plans/2026-10-08-realtime-memory.md) explain the targets.
+See [the API contract](backend/docs/API.md),
+[the evaluation protocol](docs/testing/realtime-memory-evaluation.md), and
+[browser/benchmark instructions](benchmarks/README.md).

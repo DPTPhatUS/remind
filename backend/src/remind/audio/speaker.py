@@ -1,162 +1,189 @@
+"""Local user-voice verification for the single-visitor conversation model.
+
+Cosine operating points are deliberately separated by an abstention band. They
+are engineering defaults, not accuracy estimates or calibrated probabilities.
+Anonymous diarization labels are used only within one call to ``classify``.
+"""
+
 from collections import defaultdict
+from importlib.util import find_spec
+from itertools import combinations
+
+import numpy as np
+
+MODEL = "speechbrain/spkrec-ecapa-voxceleb@0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+SAMPLE_RATE = 16000
+EMBEDDING_SIZE = 192
 
 
-def assign_speakers(segments, evidence, threshold=0.8):
-    by_segment = defaultdict(list)
-    for e in evidence:
-        if e["score"] >= threshold and e["coverage"] >= 0.8:
-            by_segment[e["segment_id"]].append(e)
-    votes = defaultdict(set)
-    invalid = set()
-    for a in segments:
-        for b in segments:
-            if a["speaker"] != b["speaker"] and min(a["end_ms"], b["end_ms"]) > max(
-                a["start_ms"], b["start_ms"]
-            ):
-                invalid.update((a["speaker"], b["speaker"]))
-    for segment in segments:
-        matches = by_segment[segment["id"]]
-        if len(matches) != 1:
-            invalid.add(segment["speaker"])
-        else:
-            votes[segment["speaker"]].add(matches[0]["person_id"])
-    candidates = {
-        speaker: next(iter(people))
-        for speaker, people in votes.items()
-        if len(people) == 1 and speaker not in invalid
-    }
-    return {
-        speaker: pid
-        for speaker, pid in candidates.items()
-        if list(candidates.values()).count(pid) == 1
-    }
+class UserVoiceVerifier:
+    def __init__(self, settings, registry):
+        self.settings = settings
+        self.registry = registry
+        self._encoder = None
+        self._vad = None
 
+    def readiness(self):
+        try:
+            for name in ("torch", "torchaudio", "speechbrain"):
+                if find_spec(name) is None:
+                    raise ImportError("Install voice dependencies with uv sync --extra speaker")
+            self.registry.verify("ecapa")
+            return {"available": True, "error": None}
+        except (FileNotFoundError, ValueError, ImportError) as exc:
+            return {"available": False, "error": str(exc)}
 
-def timeline_supports(timeline, stamp_ms, pid, box):
-    if not timeline:
-        return False
-    entry = min(timeline, key=lambda t: abs(t["ms"] - stamp_ms))
-    if abs(entry["ms"] - stamp_ms) > 150:
-        return False
-    from remind.vision.tracking import iou
+    def _load(self):
+        if self._encoder is None:
+            # Assets must already be installed and checksum verified. Local source
+            # and pretrained_path prevent any runtime download from the hub.
+            directory = self.registry.verify("ecapa").resolve()
+            import torch
+            from speechbrain.inference.classifiers import EncoderClassifier
 
-    matches = [p for p in entry["people"] if p["person_id"] == pid]
-    return len(matches) == 1 and iou(matches[0]["box"], box) >= 0.4
+            torch.set_num_threads(self.settings.voice_threads)
+            self._encoder = EncoderClassifier.from_hparams(
+                source=str(directory),
+                savedir=str(directory),
+                overrides={"pretrained_path": str(directory)},
+                run_opts={"device": "cpu"},
+            )
+        return self._encoder
 
+    @staticmethod
+    def _validate_pcm(pcm):
+        if not isinstance(pcm, np.ndarray) or pcm.ndim != 1 or pcm.dtype != np.int16:
+            raise ValueError("Expected finite mono 16 kHz PCM16 audio")
+        if not len(pcm):
+            raise ValueError("Audio is empty")
+        # int16 cannot contain NaNs; widening avoids abs(-32768) overflow.
+        if np.mean(np.abs(pcm.astype(np.int32)) >= 32700) > 0.01:
+            raise ValueError("Audio is clipped; move the microphone farther away")
 
-class LightSpeaker:
-    """Pinned Light-ASD inference. Scores are model scores, not calibrated truth."""
+    def _speech(self, pcm):
+        """Return trimmed audio and the seconds of usable WebRTC-VAD speech."""
+        if self._vad is None:
+            import webrtcvad
 
-    def __init__(self, registry, device="cpu"):
+            self._vad = webrtcvad.Vad(2)
+        count = len(pcm) // 320
+        voiced = []
+        for i in range(count):
+            frame = pcm[i * 320 : (i + 1) * 320]
+            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            if rms >= 80 and self._vad.is_speech(frame.tobytes(), SAMPLE_RATE):
+                voiced.append(i)
+        if not voiced:
+            return pcm[:0], 0.0
+        start = max(0, voiced[0] - 5) * 320
+        end = min(len(pcm), (voiced[-1] + 6) * 320)
+        return pcm[start:end], len(voiced) * 0.02
+
+    def _embedding(self, pcm):
         import torch
 
-        from remind.audio.light_asd.Model import ASD_Model
-
-        torch.set_num_threads(2)
-        self.torch = torch
-        self.device = device
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            raise ValueError("Requested CUDA speaker inference is unavailable")
-        state = torch.load(registry.verify("light-asd"), map_location="cpu", weights_only=True)
-        self.model = ASD_Model().to(device).eval()
-        self.model.load_state_dict(
-            {k.removeprefix("model."): v for k, v in state.items() if k.startswith("model.")}
-        )
-        self.fc = torch.nn.Linear(128, 2).to(device).eval()
-        self.fc.load_state_dict(
-            {
-                k.removeprefix("lossAV.FC."): v
-                for k, v in state.items()
-                if k.startswith("lossAV.FC.")
-            }
-        )
-
-    def score(self, pcm, faces):
-        import numpy as np
-        from python_speech_features import mfcc
-
-        torch = self.torch
-        audio = mfcc(pcm, 16000, numcep=13, winlen=0.025, winstep=0.010)
-        count = min(len(faces), len(audio) // 4)
-        if count < 10:
-            return np.empty(0)
-        scores = []
+        encoder = self._load()
+        waveform = torch.from_numpy(pcm.astype(np.float32) / 32768.0).unsqueeze(0)
         with torch.inference_mode():
-            for start in range(0, count, 50):
-                end = min(count, start + 50)
-                a = torch.tensor(
-                    audio[start * 4 : end * 4], dtype=torch.float32, device=self.device
-                )[None]
-                v = torch.tensor(
-                    np.asarray(faces[start:end]), dtype=torch.float32, device=self.device
-                )[None]
-                out, _ = self.model(a, v)
-                # Use normalized class score; operating threshold requires calibration.
-                scores.extend(torch.softmax(self.fc(out), dim=-1)[:, 1].cpu().numpy().tolist())
-        return np.array(scores)
+            embedding = encoder.encode_batch(waveform).detach().cpu().numpy().reshape(-1)
+        if embedding.size != EMBEDDING_SIZE or not np.isfinite(embedding).all():
+            raise ValueError("Voice model produced an invalid embedding")
+        norm = float(np.linalg.norm(embedding))
+        if norm < 1e-8:
+            raise ValueError("Voice model produced an empty embedding")
+        return embedding / norm
 
-    def evidence(self, media, segments, vision, gallery, timeline, start_ms):
-        import cv2
-        import numpy as np
+    def enroll(self, samples):
+        if not 3 <= len(samples) <= 6:
+            raise ValueError("Record between three and six separate voice samples")
+        prepared = []
+        for index, pcm in enumerate(samples, 1):
+            self._validate_pcm(pcm)
+            if not 3 * SAMPLE_RATE <= len(pcm) <= 20 * SAMPLE_RATE:
+                raise ValueError(f"Sample {index} must last between 3 and 20 seconds")
+            speech, seconds = self._speech(pcm)
+            if seconds < self.settings.voice_min_speech_seconds:
+                raise ValueError(f"Sample {index} has too little clear speech; record it again")
+            prepared.append(speech)
+        embeddings = [self._embedding(pcm) for pcm in prepared]
+        if any(
+            float(np.dot(left, right)) < self.settings.voice_enrollment_threshold
+            for left, right in combinations(embeddings, 2)
+        ):
+            raise ValueError("Voice samples are inconsistent; record only the user's voice")
+        return {"model": MODEL, "embeddings": [item.tolist() for item in embeddings]}
 
-        if not media["continuous"]:
-            return []
-        grid = np.arange(0, min(media["times"][-1], len(media["pcm"]) / 16000), 0.04)
-        crops = {}
-        valid = {}
-        last = []
-        for index, stamp in enumerate(grid):
-            source = int(np.argmin(abs(media["times"] - stamp)))
-            image = media["frames"][source]
-            if index % 3 == 0:
-                last = []
-                for observation in vision.detect_image(image):
-                    if observation["embedding"] is None:
-                        continue
-                    match = gallery.match(observation["embedding"])
-                    if match.person_id:
-                        last.append((match.person_id, observation["box"]))
-            # Two matching faces for one identity are ambiguous; accept neither.
-            unique = {pid: box for pid, box in last if sum(other == pid for other, _ in last) == 1}
-            for pid in unique:
-                if not timeline_supports(timeline, start_ms + stamp * 1000, pid, unique[pid]):
+    @staticmethod
+    def _references(profile):
+        if not profile or profile.get("model") != MODEL:
+            return None
+        try:
+            references = np.asarray(profile["embeddings"], dtype=np.float32)
+        except (KeyError, ValueError, TypeError):
+            return None
+        if (
+            references.ndim != 2
+            or not 3 <= len(references) <= 6
+            or references.shape[1] != EMBEDDING_SIZE
+            or not np.isfinite(references).all()
+        ):
+            return None
+        norms = np.linalg.norm(references, axis=1)
+        if np.any(norms < 1e-8):
+            return None
+        return references / norms[:, None]
+
+    def classify(self, pcm, segments, profile):
+        result = [{**segment, "role": "uncertain"} for segment in segments]
+        references = self._references(profile)
+        if references is None:
+            return result
+        try:
+            self._validate_pcm(pcm)
+        except ValueError:
+            return result
+
+        # Never clamp out-of-range intervals into apparently valid evidence.
+        intervals = {}
+        for index, segment in enumerate(result):
+            try:
+                start, end = float(segment["start_ms"]), float(segment["end_ms"])
+                speaker = segment.get("speaker")
+                if (
+                    not np.isfinite([start, end]).all()
+                    or not isinstance(speaker, str)
+                    or speaker.strip().lower() in {"", "unknown", "none", "null"}
+                ):
                     continue
-                if pid not in crops:
-                    crops[pid] = [np.zeros((112, 112), np.uint8) for _ in grid]
-                    valid[pid] = np.zeros(len(grid), bool)
-                x, y, w, h = unique[pid]
-                ih, iw = image.shape[:2]
-                cx, cy = (x + w / 2) * iw, (y + h / 2) * ih
-                size = max(w * iw, h * ih) / 2
-                # Reference cropScale=.4, followed by the reference center crop.
-                pad = int(size * 1.8) + 1
-                padded = cv2.copyMakeBorder(
-                    image, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(110, 110, 110)
-                )
-                cx, cy = cx + pad, cy + pad
-                crop = padded[
-                    int(cy - size) : int(cy + size * 1.8),
-                    int(cx - size * 1.4) : int(cx + size * 1.4),
-                ]
-                if crop.size:
-                    gray = cv2.cvtColor(cv2.resize(crop, (224, 224)), cv2.COLOR_BGR2GRAY)
-                    crops[pid][index] = gray[56:168, 56:168]
-                    valid[pid][index] = abs(media["times"][source] - stamp) <= 0.025
-        evidence = []
-        for pid, faces in crops.items():
-            scores = self.score(media["pcm"], faces)
-            for segment in segments:
-                a = max(0, int(segment["start_ms"] / 40))
-                b = min(len(scores), int(segment["end_ms"] / 40))
-                if b <= a:
+                if not 0 <= start < end <= len(pcm) / 16 + 1:
                     continue
-                coverage = float(valid[pid][a:b].mean())
-                evidence.append(
-                    {
-                        "segment_id": segment["id"],
-                        "person_id": pid,
-                        "score": float(np.median(scores[a:b])),
-                        "coverage": coverage,
-                    }
-                )
-        return evidence
+                intervals[index] = (round(start * 16), min(len(pcm), round(end * 16)))
+            except (KeyError, TypeError, ValueError):
+                continue
+        overlapping = set()
+        for (left, (a, b)), (right, (c, d)) in combinations(intervals.items(), 2):
+            if min(b, d) > max(a, c):
+                overlapping.update((left, right))
+
+        groups = defaultdict(list)
+        for index, (start, end) in intervals.items():
+            if index in overlapping or end - start < SAMPLE_RATE // 4:
+                continue
+            chunk, seconds = self._speech(pcm[start:end])
+            if seconds >= 0.12:
+                groups[result[index]["speaker"]].append((index, chunk, seconds))
+        for chunks in groups.values():
+            if sum(seconds for _, _, seconds in chunks) < self.settings.voice_min_speech_seconds:
+                continue
+            # Bound CPU work independently of malformed or very long transcripts.
+            voice = np.concatenate([chunk for _, chunk, _ in chunks])[: SAMPLE_RATE * 20]
+            embedding = self._embedding(voice)
+            score = float(np.median(references @ embedding))
+            role = "uncertain"
+            if score >= self.settings.voice_user_threshold:
+                role = "user"
+            elif score <= self.settings.voice_visitor_threshold:
+                role = "visitor"
+            for index, _, _ in chunks:
+                result[index].update(role=role, voice_score=score)
+        return result

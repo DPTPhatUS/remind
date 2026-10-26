@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { FaceTrack, VisionMessage } from "@/lib/api-types";
+import type {
+  FaceTrack,
+  SessionStatus,
+  VisionMessage,
+  VoiceStatus,
+} from "@/lib/api-types";
 import { captureFrames } from "./capture";
 import { recordClips } from "./audio";
 import { acceptResult } from "./protocol";
@@ -17,6 +22,7 @@ export function useLiveSession() {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [memoryStatus, setMemoryStatus] = useState("");
+  const [voiceReady, setVoiceReady] = useState<boolean | null>(null);
   const [uploadPaused, setUploadPaused] = useState(false);
   const retainedClips = useRef<ReturnType<typeof recordClips> | null>(null);
   const [jobsStatus, setJobsStatus] = useState("");
@@ -32,7 +38,7 @@ export function useLiveSession() {
   const epoch = useRef(0),
     lastResult = useRef(0);
   const stop = useCallback(async () => {
-    epoch.current++;
+    const token = ++epoch.current;
     const current = resources.current;
     resources.current = {};
     setStatus("saving");
@@ -40,15 +46,16 @@ export function useLiveSession() {
     const flushing = current.clips?.stop();
     current.stream?.getTracks().forEach((track) => track.stop());
     current.socket?.close();
+    if (video.current) video.current.srcObject = null;
     setTracks([]);
     try {
       await flushing;
       if (current.generation)
         await api(`/session/${current.generation}/stop`, { method: "POST" });
     } catch (e) {
-      setError(String(e));
+      if (token === epoch.current) setError(String(e));
     }
-    setStatus("idle");
+    if (token === epoch.current) setStatus("idle");
   }, []);
   const start = useCallback(async () => {
     const token = ++epoch.current;
@@ -63,15 +70,13 @@ export function useLiveSession() {
     setError("");
     setMemoryStatus("");
     try {
-      const session = await api<{
-        generation: string;
-        memory_available: boolean;
-      }>("/session", { method: "POST" });
+      const session = await api<SessionStatus>("/session", { method: "POST" });
       if (token !== epoch.current) {
         await api(`/session/${session.generation}/stop`, { method: "POST" });
         return;
       }
       resources.current.generation = session.generation;
+      setVoiceReady(session.voice_ready);
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -150,8 +155,12 @@ export function useLiveSession() {
             retainedClips.current = resources.current.clips = recordClips(
               stream,
               session.generation,
-              setMemoryStatus,
-              setUploadPaused,
+              (message) => {
+                if (token === epoch.current) setMemoryStatus(message);
+              },
+              (paused) => {
+                if (token === epoch.current || paused) setUploadPaused(paused);
+              },
             );
           else
             setMemoryStatus(
@@ -177,9 +186,16 @@ export function useLiveSession() {
     }
   }, [video, stop, uploadPaused]);
   useEffect(() => {
+    let active = true;
+    void api<VoiceStatus>("/user/voice")
+      .then((voice) => {
+        if (active) setVoiceReady(voice.ready);
+      })
+      .catch(() => {});
     const poll = window.setInterval(() => {
       void api<{ status: string }[]>("/jobs")
         .then((jobs) => {
+          if (!active) return;
           const failed = jobs.filter((j) => j.status === "failed").length;
           setJobsStatus(
             failed
@@ -196,6 +212,7 @@ export function useLiveSession() {
         setTracks((current) => (current.length ? [] : current));
     }, 250);
     return () => {
+      active = false;
       clearInterval(poll);
       clearInterval(timer);
       void stop();
@@ -242,6 +259,7 @@ export function useLiveSession() {
     status,
     error,
     memoryStatus,
+    voiceReady,
     jobsStatus,
     uploadPaused,
     retryUpload,

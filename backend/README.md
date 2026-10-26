@@ -1,19 +1,22 @@
 # Remind backend
 
-See the [root README](../README.md) for setup and limitations.
+FastAPI, SQLite, local YuNet/SFace face recognition, and local CPU SpeechBrain
+ECAPA-TDNN user-voice verification. OpenAI handles diarized English transcription,
+contextual extraction, and a separate evidence-verification pass.
 
-The `remind` Python package owns local SQLite memory, YuNet/SFace identity,
-Light-ASD speaker evidence, durable conversation jobs, and the FastAPI routes.
-Use `uv sync --extra speaker` and include `--extra speaker` in runtime commands
-so uv retains the optional PyTorch dependency. OpenCV and speaker inference use
-separate executors. The live frame queue keeps only the newest waiting frame.
+See the [root README](../README.md) for setup and the one-on-one assumptions.
+Use `uv sync --extra speaker` and retain `--extra speaker` in uv runtime commands.
+The model installer verifies pinned assets. Runtime data lives under `.local/`;
+configuration is in `.env` (see [.env.example](.env.example)).
 
-Runtime data and downloaded weights live under `.local/`, excluded from git.
-The installed package includes the model manifest and license notices.
-Configuration is in `.env`; see [.env.example](.env.example).
+Vision and conversation work use separate executors. The latest-only vision queue
+prevents stale overlays; conversation jobs preserve capture-time visitor and voice
+reference versions. Leases, transactional writes, and idempotent windows protect
+retries and restarts. Source transcripts and structured evidence support correction
+and forgetting. No video is decoded for voice recognition.
 
-No schema or API compatibility with the old application is provided. Existing
-legacy database data is left untouched. The current fresh schema is created on
-startup. Future schema changes will require a migration or a new dedicated file.
+No schema/API compatibility or migration is provided. Reset old development data
+once for this rewrite. Startup only creates the current schema and recovers work;
+it never intentionally wipes current memories.
 
-[API contract](docs/API.md) · [Benchmark strategy](../docs/testing/realtime-memory-evaluation.md)
+[API contract](docs/API.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)

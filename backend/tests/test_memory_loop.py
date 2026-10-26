@@ -1,94 +1,323 @@
-"""Deterministic logic test: injected media/providers, real SQLite and live session."""
+"""Injected providers/voice, with real SQLite and capture-time visitor timelines."""
 
 import numpy as np
+import pytest
 
 from remind.config import Settings
 from remind.database import Database
 from remind.live.session import LiveSession
-from remind.memory.store import MemoryStore
-from remind.memory.worker import MemoryWorker
+from remind.memory.store import MemoryStore, rows
+from remind.memory.worker import MemoryWorker, visitor_supported
 
 
-async def test_introduction_worker_restart_and_recall(tmp_path, monkeypatch):
+class Vad:
+    def accept(self, *args):
+        return [True]
+
+    def flush(self):
+        return None
+
+
+class Verifier:
+    def classify(self, pcm, segments, profile):
+        return [{**segment, "role": "visitor"} for segment in segments]
+
+
+class Provider:
+    def __init__(self, segments, claims=None, on_extract=None):
+        self.segments = segments
+        self.claims = claims
+        self.on_extract = on_extract
+        self.received = []
+        self.encounter_time = None
+        self.previous_summary = None
+
+    async def transcribe(self, pcm):
+        return self.segments
+
+    async def extract(
+        self, dialogue, previous_summary, existing_facts, encounter_time, current_ids,
+    ):
+        self.received = dialogue
+        self.encounter_time = encounter_time
+        self.previous_summary = previous_summary
+        if self.on_extract:
+            await self.on_extract()
+        current = [s for s in dialogue if s["id"] in current_ids]
+        claims = self.claims(dialogue, current) if self.claims else []
+        return {"summary": "Anna visited and discussed work and gardening.", "facts": claims}
+
+    async def verify(self, facts, dialogue, existing_facts):
+        return {"assessments": [
+            {"fact_index": i, "supported": True, "reason": "Fixture semantic verification"}
+            for i in range(len(facts))
+        ]}
+
+    async def close(self):
+        pass
+
+
+def claim(segment, predicate="name", value="Anna", category="identity", evidence=None):
+    return {
+        "subject": "visitor", "category": category, "predicate": predicate, "value": value,
+        "temporal_status": "current", "valid_from": None, "valid_to": None,
+        "operation": "add", "target_fact_id": None,
+        "evidence": evidence or [{"segment_id": segment["id"], "quote": segment["text"]}],
+    }
+
+
+def transcript(text="Everyone calls me Anna.", speaker="A"):
+    return [{"id": "s", "speaker": speaker, "text": text, "start_ms": 200, "end_ms": 1200}]
+
+
+async def make_store(tmp_path, voice=True):
     settings = Settings(data_dir=tmp_path, openai_api_key="")
     db = Database(str(tmp_path / "memory.db"))
     await db.create_schema()
     store = MemoryStore(db)
-    session = LiveSession("first", store, settings)
-    vector = np.eye(128, dtype=np.float32)[0]
-    observation = {
-        "box": [0.3, 0.2, 0.3, 0.4],
-        "embedding": vector,
-        "quality": True,
-        "thumbnail": b"x",
+    if voice:
+        await store.set_voice_profile([[1., 0., 0.], [1., 0., 0.]], "fixture-voice")
+    return settings, db, store
+
+
+async def queue(store, pid, key="intro", start=0, encounter=None, eligible=True):
+    encounter = encounter or await store.start_encounter("first")
+    await store.add_participant(encounter, pid, "track", start)
+    voice = await store.voice_status()
+    payload = {
+        "encounter": encounter, "visitor_id": pid,
+        "versions": {pid: (await store.get_person(pid))["version"]},
+        "voice_version": voice["version"], "start_ms": start, "end_ms": start + 2000,
+        "clip_path": "injected.webm",
+        "timeline": [
+            {"ms": stamp, "visitor_id": pid, "eligible": eligible,
+             "face_count": 1, "encounter": encounter, "people": [{"person_id": pid}]}
+            for stamp in range(start, start + 2001, 100)
+        ],
     }
-    for stamp in range(0, 3000, 100):
-        tracks = await session.observe([observation], stamp)
-    pid = tracks[0]["person_id"]
-    snapshot = await session.snapshot(0, 3000)
-    assert snapshot["timeline"][0]["people"][0]["person_id"] == pid
-    await store.enqueue_job(
-        snapshot["encounter"], "intro", {**snapshot, "clip_path": "injected.webm"}
-    )
-    segments = [
-        {"id": "s", "speaker": "A", "text": "My name is Anna.", "start_ms": 200, "end_ms": 1200}
-    ]
+    ident = await store.enqueue_job(encounter, key, payload)
+    return ident, payload
 
-    class Provider:
-        async def transcribe(self, pcm):
-            return segments
 
-        async def extract(self, received, mapping, previous):
-            assert mapping == {"A": pid}
-            return {
-                "summary": "Anna visited and introduced herself.",
-                "facts": [
-                    {
-                        "person_id": pid,
-                        "predicate": "name",
-                        "value": "Anna",
-                        "segment_ids": ["s"],
-                        "quote": "My name is Anna.",
-                    }
-                ],
-            }
-
-        async def close(self):
-            pass
-
-    class Speaker:
-        def evidence(self, media, received, vision, gallery, timeline, start):
-            assert timeline == snapshot["timeline"]
-            assert gallery.match(vector).person_id == pid
-            return [{"segment_id": "s", "person_id": pid, "score": 0.99, "coverage": 1}]
-
-    class Vad:
-        def accept(self, *args):
-            return [True]
-
-        def flush(self):
-            return None
-
-    monkeypatch.setattr(
-        "remind.memory.worker.decode_clip", lambda _: {"pcm": np.ones(16000, dtype=np.int16)}
-    )
+def inject_audio(monkeypatch, continuous=True):
+    monkeypatch.setattr("remind.memory.worker.decode_audio", lambda _: {
+        "pcm": np.ones(32000, dtype=np.int16), "continuous": continuous,
+    })
     monkeypatch.setattr("remind.memory.worker.AudioWindowBuffer", Vad)
-    worker = MemoryWorker(store, settings, None)
-    worker.providers = Provider()
-    worker.speaker = Speaker()
+
+
+async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    vector = np.eye(128, dtype=np.float32)[0]
+    await store.add_template(person["id"], vector)
+    job, payload = await queue(store, person["id"])
+    inject_audio(monkeypatch)
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
     assert await worker.run_once()
+    assert (await store.get_person(person["id"]))["name"] == "Anna"
+    assert (await store.recent_context(payload["encounter"]))[0]["id"].startswith(job + ":")
+    metric = (await store.processing_metrics())[0]
+    assert metric["proposed_facts"] == metric["verified_facts"] == 1
+    assert metric["visitor_segments"] == 1
+    assert all(metric[field] >= 0 for field in (
+        "decode_ms", "transcription_ms", "voice_ms", "extraction_ms", "verification_ms",
+        "processing_ms",
+    ))
+    assert not await worker.run_once()
     await worker.close()
-    await session.stop()
+    await store.close_encounter(payload["encounter"])
     await db.close()
 
     reopened = Database(str(tmp_path / "memory.db"))
     await reopened.create_schema()
     returning = LiveSession("return", MemoryStore(reopened), settings)
+    observation = {"box": [0.3, 0.2, 0.3, 0.4], "embedding": vector,
+                   "quality": True, "thumbnail": b"x"}
     for stamp in (0, 100, 200):
         tracks = await returning.observe([observation], stamp)
     memory = tracks[0]["memory"]
     assert memory["name"] == "Anna"
-    assert memory["last_encounter"]["summary"] == "Anna visited and introduced herself."
-    assert memory["last_encounter"]["id"] == snapshot["encounter"]
+    assert memory["last_encounter"]["summary"].startswith("Anna visited")
+    assert memory["last_encounter"]["id"] == payload["encounter"]
     await returning.stop()
     await reopened.close()
+
+
+@pytest.mark.parametrize("reason", ["no_voice", "multiple_faces", "discontinuous_audio"])
+async def test_unreliable_roles_save_neutral_memory_without_profile_facts(
+    tmp_path, monkeypatch, reason,
+):
+    settings, db, store = await make_store(tmp_path, voice=reason != "no_voice")
+    person = await store.create_person()
+    _, payload = await queue(store, person["id"], eligible=reason != "multiple_faces")
+    inject_audio(monkeypatch, continuous=reason != "discontinuous_audio")
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
+    await worker.run_once()
+    assert await store.facts_for_person(person["id"]) == []
+    context = await store.recent_context(payload["encounter"])
+    assert context[0]["role"] == "uncertain"
+    await worker.close()
+    await db.close()
+
+
+async def test_question_context_survives_clips_with_changing_speaker_labels(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, payload = await queue(store, person["id"], "question")
+    inject_audio(monkeypatch)
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+
+    class UserVerifier:
+        def classify(self, pcm, segments, profile):
+            return [{**s, "role": "user"} for s in segments]
+
+    worker.verifier = UserVerifier()
+    worker.providers = Provider(transcript("Where do you work?", "A"))
+    await worker.run_once()
+    await queue(store, person["id"], "answer", start=2000, encounter=payload["encounter"])
+    worker.verifier = Verifier()
+
+    def contextual(dialogue, current):
+        question, answer = dialogue[0], current[0]
+        assert question["role"] == "user" and answer["role"] == "visitor"
+        assert question["speaker"] == answer["speaker"] == "A"  # labels have no global identity
+        assert question["id"] != answer["id"]
+        return [claim(answer, "workplace", "primary school", "work", evidence=[
+            {"segment_id": question["id"], "quote": question["text"]},
+            {"segment_id": answer["id"], "quote": answer["text"]},
+        ])]
+
+    worker.providers = Provider(transcript("At the primary school.", "A"), contextual)
+    await worker.run_once()
+    facts = await store.facts_for_person(person["id"])
+    assert len(facts) == 1 and facts[0]["value"] == "primary school"
+    assert len(facts[0]["evidence"]) == 2
+    await worker.close()
+    await db.close()
+
+
+async def test_late_old_clip_cannot_use_future_utterance_as_confirmation(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, future = await queue(store, person["id"], "future-question", start=2000)
+    inject_audio(monkeypatch)
+
+    class UserVerifier:
+        def classify(self, pcm, segments, profile):
+            return [{**s, "role": "user"} for s in segments]
+
+    worker = MemoryWorker(store, settings, None, verifier=UserVerifier())
+    worker.providers = Provider(transcript("Do you live in Da Nang?"))
+    await worker.run_once()
+    future_question = (await store.recent_context(future["encounter"]))[0]
+    assert future_question["start_ms"] == 2200
+
+    # The earlier upload arrives after the later question has already been saved.
+    await queue(store, person["id"], "late-answer", start=0, encounter=future["encounter"])
+
+    def contextual(dialogue, current):
+        questions = [s for s in dialogue if s["text"] == "Do you live in Da Nang?"]
+        if not questions:
+            return []
+        return [claim(current[0], "residence", "Da Nang", "residence", evidence=[
+            {"segment_id": questions[0]["id"], "quote": questions[0]["text"]},
+            {"segment_id": current[0]["id"], "quote": current[0]["text"]},
+        ])]
+
+    worker.verifier = Verifier()
+    provider = Provider(transcript("Yes."), contextual)
+    worker.providers = provider
+    await worker.run_once()
+    assert future_question["id"] not in {s["id"] for s in provider.received}
+    assert provider.previous_summary == ""
+    assert await store.facts_for_person(person["id"]) == []
+    await worker.close()
+    await db.close()
+
+
+@pytest.mark.parametrize("action", ["forget", "correct", "replace_voice"])
+async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monkeypatch, action):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    await queue(store, person["id"])
+    inject_audio(monkeypatch)
+
+    async def mutation():
+        if action == "forget":
+            await store.forget_person(person["id"])
+        elif action == "correct":
+            await store.correct_person(person["id"], {"name": "Grace"}, person["version"])
+        else:
+            await store.set_voice_profile([[0., 1., 0.]], "replacement")
+
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])], mutation)
+    await worker.run_once()
+    current = await store.get_person(person["id"])
+    if action == "forget":
+        assert current is None
+        assert await store.facts_for_person(person["id"]) == []
+    elif action == "correct":
+        assert current["name"] == "Grace"
+    else:
+        assert current["name"] is None
+    await worker.close()
+    await db.close()
+
+
+def test_capture_time_presence_gating_requires_complete_fresh_single_visitor():
+    segment = {"start_ms": 200, "end_ms": 900}
+    timeline = [{"ms": ms, "eligible": True, "visitor_id": "anna"}
+                for ms in (0, 200, 400, 600, 800)]
+    assert visitor_supported(segment, timeline, 0, "anna")
+    assert not visitor_supported(segment, timeline, 0, "bob")
+    assert not visitor_supported(segment, timeline[:1], 0, "anna")
+    assert not visitor_supported(segment, [{**t, "eligible": False} for t in timeline], 0, "anna")
+    changed = [{**t, "visitor_id": "bob" if t["ms"] >= 600 else "anna"} for t in timeline]
+    assert not visitor_supported(segment, changed, 0, "anna")
+
+
+async def test_worker_failure_can_retry_without_duplicate_facts(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    job, _ = await queue(store, person["id"])
+    inject_audio(monkeypatch)
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+
+    class Broken(Provider):
+        async def verify(self, *args):
+            raise TimeoutError("temporary provider issue")
+
+    worker.providers = Broken(transcript(), lambda _, current: [claim(current[0])])
+    await worker.run_once()
+    assert await store.facts_for_person(person["id"]) == []
+    async with db.transaction() as conn:
+        await conn.execute("UPDATE jobs SET next_at=0 WHERE id=?", (job,))
+    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
+    await worker.run_once()
+    assert len(await store.facts_for_person(person["id"])) == 1
+    async with db.transaction() as conn:
+        result = await rows(conn, "SELECT status,attempts FROM jobs WHERE id=?", (job,))
+    assert result[0] == {"status": "done", "attempts": 2}
+    await worker.close()
+    await db.close()
+
+
+async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, payload = await queue(store, person["id"])
+    async with db.transaction() as conn:
+        await conn.execute("UPDATE encounters SET started_at=? WHERE id=?",
+                           ("2026-10-26T19:00:00+00:00", payload["encounter"]))
+    inject_audio(monkeypatch)
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    provider = Provider(transcript("I will visit tomorrow."))
+    worker.providers = provider
+    await worker.run_once()
+    assert provider.encounter_time == "2026-10-27T02:00:00+07:00"
+    await worker.close()
+    await db.close()

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import time
 
 import numpy as np
@@ -14,6 +15,7 @@ class LiveSession:
         self.gallery = FaceGallery(settings.match_threshold, settings.match_margin)
         self.revision = -1
         self.encounter = None
+        self.visitor_id = None
         self.last_presence = 0
         self.seen = {}
         self.cards = {}
@@ -74,29 +76,6 @@ class LiveSession:
                             track.state = "remembered"
                             track.candidate, track.votes = person["id"], 3
                             await self.refresh()
-                if track.person_id:
-                    if self.encounter is None:
-                        self.encounter = await self.store.start_encounter(self.generation)
-                    # Fill only this continuous track's pre-enrollment evidence, so its
-                    # first introduction can be assigned after identity stabilizes.
-                    for entry in self.timeline:
-                        if entry["ms"] < track.first_ms:
-                            continue
-                        for person in entry["people"]:
-                            if person["track_id"] == track.id and not person["person_id"]:
-                                person["person_id"] = track.person_id
-                                entry["encounter"] = self.encounter
-                    key = (track.id, track.person_id)
-                    if key not in self.seen:
-                        await self.store.add_participant(
-                            self.encounter, track.person_id, track.id, capture_ms
-                        )
-                    self.seen[key] = capture_ms
-                    self.last_presence = capture_ms
-                    if track.person_id not in self.cards:
-                        self.cards[track.person_id] = await self.store.person_memory(
-                            track.person_id, exclude_encounter_id=self.encounter
-                        )
                 result.append(
                     {
                         "track_id": track.id,
@@ -104,22 +83,67 @@ class LiveSession:
                         "state": track.state,
                         "box": track.box,
                         "last_seen_ms": capture_ms,
-                        "memory": self.cards.get(track.person_id),
+                        "memory": None,
                     }
                 )
+
+            # One visible face is a product assumption, not a speaker-model result.
+            # Count all detections, including unusable/unknown faces, before accepting it.
+            single = result[0] if len(observations) == 1 and len(result) == 1 else None
+            visitor = single["person_id"] if single else None
+            if visitor:
+                if self.encounter and self.visitor_id != visitor:
+                    await self.close_encounter(capture_ms)
+                if self.encounter is None:
+                    self.encounter = await self.store.start_encounter(self.generation)
+                    self.visitor_id = visitor
+                    # Permit the first introduction after a continuous face stabilizes.
+                    track = next(t for t in tracks if t.id == single["track_id"])
+                    for entry in self.timeline:
+                        if (
+                            entry["ms"] < track.first_ms
+                            or entry["face_count"] != 1
+                            or entry["encounter"] not in (None, self.encounter)
+                        ):
+                            continue
+                        for person in entry["people"]:
+                            if person["track_id"] == track.id and person["person_id"] in (
+                                None, visitor
+                            ):
+                                person["person_id"] = visitor
+                                entry.update(
+                                    encounter=self.encounter, visitor_id=visitor, eligible=True
+                                )
+                key = (single["track_id"], visitor)
+                if key not in self.seen:
+                    await self.store.add_participant(
+                        self.encounter, visitor, single["track_id"], capture_ms
+                    )
+                self.seen[key] = capture_ms
+                self.last_presence = capture_ms
+
             for (tid, pid), last in list(self.seen.items()):
                 if capture_ms - last > 2000:
                     await self.store.end_participant(self.encounter, tid, last)
                     del self.seen[(tid, pid)]
             if self.encounter and capture_ms - self.last_presence > 8000:
-                await self.store.close_encounter(self.encounter)
-                self.encounter = None
-                self.seen = {}
-                self.cards = {}
+                await self.close_encounter(capture_ms)
+
+            for item in result:
+                pid = item["person_id"]
+                if pid:
+                    if pid not in self.cards:
+                        self.cards[pid] = await self.store.person_memory(
+                            pid, exclude_encounter_id=self.encounter
+                        )
+                    item["memory"] = self.cards[pid]
             self.timeline.append(
                 {
                     "ms": capture_ms,
                     "encounter": self.encounter,
+                    "visitor_id": self.visitor_id,
+                    "eligible": bool(visitor and visitor == self.visitor_id),
+                    "face_count": len(observations),
                     "people": [
                         {"person_id": r["person_id"], "track_id": r["track_id"], "box": r["box"]}
                         for r in result
@@ -137,7 +161,10 @@ class LiveSession:
                 # Never attach a mixed or expired capture to whichever encounter is current.
                 return None
             encounter = next(iter(encounters))
-            ids = {p["person_id"] for t in timeline for p in t["people"] if p["person_id"]}
+            ids = {t["visitor_id"] for t in timeline if t["visitor_id"]}
+            if len(ids) != 1:
+                return None
+            visitor_id = next(iter(ids))
             versions = {}
             for pid in ids:
                 person = await self.store.get_person(pid)
@@ -145,17 +172,32 @@ class LiveSession:
                     versions[pid] = person["version"]
             return {
                 "encounter": encounter,
+                "visitor_id": visitor_id,
+                "voice_version": (await self.store.voice_status())["version"],
                 "versions": versions,
-                "timeline": timeline,
+                "timeline": copy.deepcopy(timeline),
                 "start_ms": start_ms,
                 "end_ms": end_ms,
             }
+
+    async def close_encounter(self, capture_ms):
+        if self.encounter:
+            for (tid, _), last in self.seen.items():
+                await self.store.end_participant(self.encounter, tid, min(last, capture_ms))
+            await self.store.close_encounter(self.encounter)
+        self.encounter = None
+        self.visitor_id = None
+        self.seen = {}
+        self.cards = {}
 
     async def stop(self):
         async with self.lock:
             if self.stopped:
                 return
             self.stopped = True
+            # Keep the completed encounter ID for retained final-upload snapshots.
             if self.encounter:
+                for (tid, _), last in self.seen.items():
+                    await self.store.end_participant(self.encounter, tid, last)
                 await self.store.close_encounter(self.encounter)
             self.tracker = Tracker()

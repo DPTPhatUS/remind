@@ -11,10 +11,40 @@
     "size": 38696353,
     "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
   },
-  "light-asd": {
-    "file": "light-asd.model",
-    "url": "https://raw.githubusercontent.com/Junhua-Liao/Light-ASD/ed38c232de5efe0261dbd68627c0ade7cdfe14eb/weight/pretrain_AVA_CVPR.model",
-    "sha256": "d44bc3ea7baa8e0946fa3921311714a630ed8b90a1928fab0dbe30d918909317",
-    "size": 4175289
+  "ecapa": {
+    "directory": "ecapa",
+    "source": "speechbrain/spkrec-ecapa-voxceleb@0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+    "files": [
+      {
+        "file": "ecapa/hyperparams.yaml",
+        "size": 1919,
+        "sha256": "6f78854fa04ba59e761437b76a2575d3aba5e5016de3e9b69f0c9a5077fb1a41",
+        "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286/hyperparams.yaml"
+      },
+      {
+        "file": "ecapa/embedding_model.ckpt",
+        "size": 83316686,
+        "sha256": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2",
+        "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286/embedding_model.ckpt"
+      },
+      {
+        "file": "ecapa/mean_var_norm_emb.ckpt",
+        "size": 1921,
+        "sha256": "cd70225b05b37be64fc5a95e24395d804231d43f74b2e1e5a513db7b69b34c33",
+        "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286/mean_var_norm_emb.ckpt"
+      },
+      {
+        "file": "ecapa/classifier.ckpt",
+        "size": 5534328,
+        "sha256": "fd9e3634fe68bd0a427c95e354c0c677374f62b3f434e45b78599950d860d535",
+        "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286/classifier.ckpt"
+      },
+      {
+        "file": "ecapa/label_encoder.txt",
+        "size": 128619,
+        "sha256": "e13c3a167bb4112685670ee896d20e2b565af16b3a4ceeaa8689fa4d22adb8b9",
+        "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286/label_encoder.txt"
+      }
+    ]
   }
 }

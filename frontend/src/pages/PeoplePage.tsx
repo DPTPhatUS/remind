@@ -54,6 +54,9 @@ export function PeoplePage() {
               <div>
                 <h2>{person.name ?? "Name not learned yet"}</h2>
                 <p>{person.relationship ?? "Someone you’ve met"}</p>
+                {person.profile_summary && (
+                  <p className="person-summary">{person.profile_summary}</p>
+                )}
                 <small>
                   First met {new Date(person.created_at).toLocaleDateString()}
                 </small>

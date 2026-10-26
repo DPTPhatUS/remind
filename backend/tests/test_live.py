@@ -83,3 +83,63 @@ async def test_delayed_clip_retains_original_encounter(store):
     snapshot = await session.snapshot(0, 3000)
     assert snapshot["encounter"] == old
     await session.stop()
+
+
+def face(index=0):
+    return {
+        "box": [0.3, 0.2, 0.3, 0.4],
+        "embedding": np.eye(128, dtype=np.float32)[index],
+        "quality": True,
+        "thumbnail": b"x",
+    }
+
+
+async def test_new_visitor_closes_original_encounter_and_mixed_clip_is_rejected(store):
+    first = await store.create_person(name="Anna")
+    second = await store.create_person(name="Ben")
+    await store.add_template(first["id"], face(0)["embedding"])
+    await store.add_template(second["id"], face(1)["embedding"])
+    session = LiveSession("one", store, Settings())
+    for stamp in (0, 100, 200, 300):
+        await session.observe([face(0)], stamp)
+    original = session.encounter
+    before = await session.snapshot(200, 300)
+    for stamp in (400, 500, 600, 700):
+        await session.observe([face(1)], stamp)
+    assert session.encounter != original
+    assert session.visitor_id == second["id"]
+    assert (await store.person_memory(first["id"]))["last_encounter"]["id"] == original
+    assert await session.snapshot(200, 700) is None
+    assert before["visitor_id"] == first["id"]
+    assert all(t["visitor_id"] == first["id"] for t in before["timeline"])
+    await session.stop()
+
+
+async def test_second_unusable_face_suspends_learning_and_timeline_is_immutable(store):
+    session = LiveSession("one", store, Settings())
+    for stamp in range(0, 2400, 100):
+        await session.observe([face()], stamp)
+    snapshot = await session.snapshot(2100, 2300)
+    assert all(t["eligible"] for t in snapshot["timeline"])
+    unclear = {**face(1), "embedding": None, "quality": False}
+    await session.observe([face(), unclear], 2400)
+    group = await session.snapshot(2300, 2400)
+    assert group["timeline"][-1]["face_count"] == 2
+    assert group["timeline"][-1]["eligible"] is False
+    # Callers own their snapshot: neither mutation nor future backfill can change it.
+    snapshot["timeline"][0]["eligible"] = False
+    assert (await session.snapshot(2100, 2300))["timeline"][0]["eligible"] is True
+    await session.stop()
+
+
+async def test_memory_commit_refreshes_live_reminder_without_restarting_camera(store):
+    session = LiveSession("one", store, Settings())
+    for stamp in range(0, 2400, 100):
+        tracks = await session.observe([face()], stamp)
+    pid = tracks[0]["person_id"]
+    person = await store.get_person(pid)
+    await store.correct_person(pid, {"name": "Anna"}, person["version"])
+    tracks = await session.observe([face()], 2400)
+    assert tracks[0]["memory"]["name"] == "Anna"
+    assert tracks[0]["memory"]["last_encounter"] is None
+    await session.stop()

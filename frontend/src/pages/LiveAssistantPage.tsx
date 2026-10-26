@@ -1,5 +1,43 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { Link } from "react-router-dom";
 import { useLiveSession } from "@/features/live/session";
+import type { FaceTrack } from "@/lib/api-types";
+
+function VisitorReminder({ track }: { track: FaceTrack }) {
+  return (
+    <>
+      <strong>
+        {track.memory?.name ??
+          (track.person_id
+            ? "Someone you’ve met"
+            : track.state === "ambiguous"
+              ? "Still identifying…"
+              : "Getting to know this person")}
+      </strong>
+      {track.memory?.relationship && <span>{track.memory.relationship}</span>}
+      {track.memory?.age && <span>Age stated: {track.memory.age}</span>}
+      {track.memory?.highlights.length ? (
+        <ul className="face-highlights">
+          {track.memory.highlights.slice(0, 3).map((highlight) => (
+            <li key={highlight}>{highlight}</li>
+          ))}
+        </ul>
+      ) : null}
+      {track.memory?.last_encounter && (
+        <p>
+          <small>
+            Last met{" "}
+            {new Date(
+              track.memory.last_encounter.started_at,
+            ).toLocaleDateString()}
+          </small>
+          {track.memory.last_encounter.summary ??
+            "No conversation summary recorded."}
+        </p>
+      )}
+    </>
+  );
+}
 
 export function LiveAssistantPage() {
   const {
@@ -7,6 +45,7 @@ export function LiveAssistantPage() {
     status,
     error,
     memoryStatus,
+    voiceReady,
     jobsStatus,
     uploadPaused,
     retryUpload,
@@ -71,56 +110,37 @@ export function LiveAssistantPage() {
             </div>
           )}
           {tracks.map((track) => (
-            <div
-              key={track.track_id}
-              className={`face-box ${track.person_id ? "known" : ""}`}
-              style={{
-                left: `${track.box[0] * 100}%`,
-                top: `${track.box[1] * 100}%`,
-                width: `${track.box[2] * 100}%`,
-                height: `${track.box[3] * 100}%`,
-              }}
-            >
+            <Fragment key={track.track_id}>
+              <div
+                className={`face-box ${track.person_id ? "known" : ""}`}
+                style={{
+                  left: `${track.box[0] * 100}%`,
+                  top: `${track.box[1] * 100}%`,
+                  width: `${track.box[2] * 100}%`,
+                  height: `${track.box[3] * 100}%`,
+                }}
+              />
               <div
                 className="face-card"
                 style={{
-                  top: track.box[1] > 0.3 ? "auto" : "100%",
-                  bottom: track.box[1] > 0.3 ? "100%" : "auto",
-                  left: track.box[0] > 0.65 ? "auto" : 0,
-                  right: track.box[0] > 0.65 ? 0 : "auto",
+                  left: `clamp(8px, ${track.box[0] > 0.5 ? `calc(${track.box[0] * 100}% - clamp(150px, 20vw, 250px) - 10px)` : `calc(${(track.box[0] + track.box[2]) * 100}% + 10px)`}, calc(100% - clamp(150px, 20vw, 250px) - 8px))`,
                 }}
               >
-                <strong>
-                  {track.memory?.name ??
-                    (track.person_id
-                      ? "Someone you’ve met"
-                      : track.state === "ambiguous"
-                        ? "Still identifying…"
-                        : "Getting to know this person")}
-                </strong>
-                {track.memory?.relationship && (
-                  <span>{track.memory.relationship}</span>
-                )}
-                {track.memory?.age && (
-                  <span>Age stated: {track.memory.age}</span>
-                )}
-                {track.memory?.last_encounter && (
-                  <p>
-                    <small>
-                      Last met{" "}
-                      {new Date(
-                        track.memory.last_encounter.started_at,
-                      ).toLocaleDateString()}
-                    </small>
-                    {track.memory.last_encounter.summary ??
-                      "No conversation summary recorded."}
-                  </p>
-                )}
+                <VisitorReminder track={track} />
               </div>
-            </div>
+            </Fragment>
           ))}
         </div>
       </div>
+      {tracks.length > 0 && (
+        <div className="mobile-reminders">
+          {tracks.map((track) => (
+            <article className="visitor-reminder" key={track.track_id}>
+              <VisitorReminder track={track} />
+            </article>
+          ))}
+        </div>
+      )}
       <div className="live-footer">
         <span className={`status-dot ${status === "live" ? "active" : ""}`} />
         {status === "live"
@@ -132,6 +152,13 @@ export function LiveAssistantPage() {
           {memoryStatus} {jobsStatus}
         </span>
       </div>
+      {voiceReady === false && (
+        <p className="setup-note">
+          Personal details learning is paused until a helper completes{" "}
+          <Link to="/setup">voice setup</Link>. Face recognition and available
+          conversation summaries continue.
+        </p>
+      )}
       {uploadPaused && (
         <div className="upload-recovery">
           <button onClick={() => void retryUpload()}>
@@ -156,8 +183,9 @@ export function LiveAssistantPage() {
           {diagnostics.dropped} replaced frames
         </p>
         <p>
-          Recognition and speaker thresholds need calibration on your encounter
-          recordings.
+          Voice matching assumes a quiet conversation with one visitor.
+          Background voices can be mistaken for that visitor. Recognition and
+          voice thresholds need calibration on encounter recordings.
         </p>
         <button className="secondary" onClick={exportTrace}>
           Download performance trace

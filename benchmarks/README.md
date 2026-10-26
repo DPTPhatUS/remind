@@ -2,7 +2,7 @@
 
 Run everything on an isolated data directory. Keep participant media and labels
 outside Git. See [the evaluation protocol](../docs/testing/realtime-memory-evaluation.md)
-for dataset splits, scenario matrix, accuracy gates and sample-size requirements.
+for fixture scope, metrics, and later staged-conversation evaluation.
 The included example manifest contains placeholders, not a dataset.
 
 ## Logic and browser runners
@@ -12,7 +12,7 @@ cd backend
 uv run --extra speaker pytest -q
 ```
 
-`test_memory_loop.py` injects detections, transcription and speaker evidence,
+`test_memory_loop.py` injects detections, transcription, user/visitor roles and semantic verification,
 then runs enrollment → extraction → durable write → database close/reopen →
 recognition → previous-encounter recall. Other tests cover corrections,
 forgetting, stale workers, ambiguous matches, timestamps and job retries.
@@ -33,13 +33,35 @@ and start Vite as documented in the root README. Then:
 ```bash
 cd frontend
 npx playwright install chromium
-npx playwright test
+npx playwright test --workers=1
+# If bundled Chromium is unavailable but Chrome is installed:
+# PLAYWRIGHT_CHANNEL=chrome npx playwright test --workers=1
 ```
 
 The browser test uses a fake camera and real face inference, corrects a profile,
 stops/restarts capture and verifies returning-person recall. **It deletes all
 people in the server it tests. Never point it at a patient store.** Cloud calls
 are disabled in this test. Screenshots go to `/tmp/remind-*.png`.
+
+## Conversation fixtures and voice smoke
+
+`e2e/one-on-one.spec.ts` exercises the full helper setup and rich-profile UI with
+REST/WebSocket fixtures and real browser recording. It needs Vite, but no cloud
+key. It establishes UI behavior, not neural or semantic accuracy. The real-camera
+suite separately uses the disposable backend and verified face models.
+
+The local ECAPA smoke uses pinned public SpeechBrain utterances. Enrollment has
+three distinct utterances; verification uses separate same-user and other-speaker
+utterances. Nothing is uploaded to OpenAI:
+
+```bash
+cd backend
+uv run --extra speaker python -m remind.audio.smoke --download --output /tmp/remind-voice-smoke.json
+```
+
+The report separates correct assignments, abstentions, wrong assignments, model
+revision, enrollment inputs and per-utterance inference timing. Four clean public
+utterances do not establish real-world Remind accuracy or calibrate thresholds.
 
 ## Recorded video runner
 

@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { LiveAssistantPage } from "@/pages/LiveAssistantPage";
 import { PeoplePage } from "@/pages/PeoplePage";
 import { PersonDetailPage } from "@/pages/PersonDetailPage";
+import { SetupPage } from "@/pages/SetupPage";
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
             Live view
           </NavLink>
           <NavLink to="/people">People</NavLink>
+          <NavLink to="/setup">Voice setup</NavLink>
         </nav>
         <span className="ownership">Your personal memory</span>
       </header>
@@ -22,6 +24,7 @@ export default function App() {
         <Route path="/" element={<LiveAssistantPage />} />
         <Route path="/people" element={<PeoplePage />} />
         <Route path="/people/:id" element={<PersonDetailPage />} />
+        <Route path="/setup" element={<SetupPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

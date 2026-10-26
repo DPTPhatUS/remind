@@ -30,7 +30,7 @@ def main():
     elif args.command == "doctor":
         result = {
             "vision_device": "cpu",
-            "speaker_device": settings.speaker_device,
+            "voice_device": "cpu",
             "cloud_key_configured": bool(settings.openai_api_key),
             "models": {},
         }
@@ -44,6 +44,10 @@ def main():
 
             result["torch"] = torch.__version__
             result["cuda_available"] = torch.cuda.is_available()
+        from remind.audio.speaker import UserVoiceVerifier
+
+        result["voice"] = UserVoiceVerifier(settings, registry).readiness()
+        result["thresholds_calibrated"] = False
         print(json.dumps(result, indent=2))
     elif args.command == "evaluate-trace":
         from remind.benchmark.metrics import evaluate_trace

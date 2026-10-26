@@ -5,7 +5,7 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:5173",
     headless: true,
-    channel: "chromium",
+    channel: process.env.PLAYWRIGHT_CHANNEL ?? "chromium",
   },
   reporter: "list",
 });
