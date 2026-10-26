@@ -4,9 +4,9 @@ import { api } from "@/lib/api";
 import type { Person } from "@/lib/api-types";
 
 export function PeoplePage() {
-  const [people, setPeople] = useState<Person[]>([]),
-    [error, setError] = useState(""),
-    [loading, setLoading] = useState(true);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
     api<Person[]>("/people")
@@ -36,7 +36,7 @@ export function PeoplePage() {
       )}
       {loading ? (
         <p>Loading people…</p>
-      ) : people.length ? (
+      ) : error ? null : people.length ? (
         <div className="people-grid">
           {people.map((person) => (
             <Link

@@ -9,6 +9,7 @@ npm run dev -- --host 127.0.0.1
 ```
 
 Vite proxies `/api` HTTP and WebSocket traffic to `http://127.0.0.1:8000`.
+Set `REMIND_API_URL` to use a different local backend.
 Use localhost or HTTPS for camera access. Start/Stop owns capture explicitly.
 The preview is direct camera video; fresh backend face results produce overlays.
 Voice setup lets a helper save the user reference. People provides categorized
@@ -19,8 +20,9 @@ reminders show up to three established highlights and the previous encounter.
 npm test
 npm run build
 npm run lint
+npm run test:e2e
 ```
 
-[Backend contract](../backend/docs/API.md). Browser tests use Playwright with a
-synthetic camera fixture and a separate test database; see
+[Backend contract](../backend/docs/API.md). Playwright starts isolated local
+servers and uses a separate test database. For camera fixtures and setup, see
 [benchmark instructions](../benchmarks/README.md).

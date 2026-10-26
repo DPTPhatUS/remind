@@ -1,14 +1,18 @@
 import io
-import json
 import wave
 
 import av
 import numpy as np
 import pytest
 
-from remind.audio.media import audio_is_continuous, decode_audio, wav_bytes
+from remind.audio.media import (
+    VAD_FRAME_SAMPLES,
+    audio_is_continuous,
+    decode_audio,
+    has_speech,
+    wav_bytes,
+)
 from remind.audio.speaker import MODEL, UserVoiceVerifier
-from remind.audio.windows import AudioWindowBuffer
 from remind.config import Settings
 from remind.vision.models import ModelRegistry
 
@@ -39,14 +43,26 @@ def profile():
     return {"model": MODEL, "embeddings": [vector().tolist()] * 3, "version": 1}
 
 
-def test_final_partial_and_eight_second_limit():
-    buffer = AudioWindowBuffer(is_speech=lambda _: True)
-    data = np.ones(16000 * 9, dtype=np.int16).tobytes()
-    windows = buffer.accept(data, 0, 16000)
-    assert len(windows) == 1
-    assert len(windows[0]["pcm"]) == 16000 * 8 * 2
-    last = buffer.flush()
-    assert len(last["pcm"]) == 16000 * 2
+def test_speech_detection_rejects_empty_audio_and_digital_silence():
+    assert not has_speech(np.zeros(0, dtype=np.int16))
+    assert not has_speech(np.zeros(48000, dtype=np.int16))
+
+
+def test_speech_detection_uses_complete_frames_and_stops_at_speech(monkeypatch):
+    frames = []
+
+    class Vad:
+        def is_speech(self, frame, sample_rate):
+            frames.append(frame)
+            assert sample_rate == 16000
+            assert len(frame) == VAD_FRAME_SAMPLES * 2
+            return len(frames) == 2
+
+    monkeypatch.setattr("webrtcvad.Vad", lambda _: Vad())
+    assert not has_speech(np.zeros(VAD_FRAME_SAMPLES - 1, dtype=np.int16))
+    assert not frames
+    assert has_speech(pcm())
+    assert len(frames) == 2
 
 
 def test_enrollment_requires_three_distinct_usable_samples(verifier):
@@ -55,6 +71,8 @@ def test_enrollment_requires_three_distinct_usable_samples(verifier):
     assert np.asarray(enrolled["embeddings"]).shape == (3, 192)
     with pytest.raises(ValueError, match="three"):
         verifier.enroll([pcm()])
+    with pytest.raises(ValueError, match="five"):
+        verifier.enroll([pcm()] * 6)
     with pytest.raises(ValueError, match="between 3 and 20"):
         verifier.enroll([pcm(1), pcm(), pcm()])
     with pytest.raises(ValueError, match="PCM16"):
@@ -107,6 +125,20 @@ def test_overlap_rejects_only_affected_segments(verifier):
     ]
     result = verifier.classify(pcm(6), segments, profile())
     assert [part["role"] for part in result] == ["uncertain", "uncertain", "user", "user"]
+
+
+@pytest.mark.parametrize("label", [None, "unknown", ["A"]])
+def test_unknown_speaker_still_makes_overlapping_speech_uncertain(verifier, label):
+    segments = [segment("a", "A", 0, 2000), segment("b", label, 1000, 3000)]
+    result = verifier.classify(pcm(), segments, profile())
+    assert [part["role"] for part in result] == ["uncertain", "uncertain"]
+
+
+def test_overflowing_reference_norm_cannot_establish_a_visitor_role(verifier):
+    reference = {**profile(), "embeddings": [[1e30] * 192] * 3}
+    with np.errstate(over="ignore"):
+        result = verifier.classify(pcm(), [segment()], reference)
+    assert result[0]["role"] == "uncertain"
 
 
 def test_speaker_labels_are_local_to_each_clip(verifier, monkeypatch):
@@ -236,10 +268,10 @@ def test_readiness_reports_missing_models_without_loading(tmp_path):
     assert verifier._encoder is None
 
 
-def test_model_manifest_has_no_light_asd():
+def test_voice_bundle_matches_the_pinned_model():
     registry = ModelRegistry("unused")
-    assert "light-asd" not in registry.models
-    assert "ecapa" in registry.models
-    assert (
-        json.dumps(registry.models["ecapa"]).count("0f99f2d0ebe89ac095bcc5903c4dd8f72b367286") == 6
-    )
+    bundle = registry.models["ecapa"]
+    assert bundle["source"] == MODEL
+    revision = MODEL.split("@")[1]
+    assert bundle["files"]
+    assert all(f"/resolve/{revision}/" in item["url"] for item in bundle["files"])

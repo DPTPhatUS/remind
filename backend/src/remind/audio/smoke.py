@@ -11,11 +11,12 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 
 import numpy as np
 
-from remind.audio.media import decode_audio
+from remind.audio.media import SAMPLE_RATE, decode_audio
 from remind.audio.speaker import MODEL, UserVoiceVerifier
 from remind.config import Settings
 from remind.vision.models import ModelRegistry
@@ -32,7 +33,7 @@ FIXTURES = {
 }
 
 
-def fetch_fixtures(directory, download):
+def fetch_fixtures(directory: Path, download: bool) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for name, digest in FIXTURES.items():
         path = directory / name
@@ -52,7 +53,7 @@ def fetch_fixtures(directory, download):
             raise ValueError(f"Fixture checksum mismatch: {name}")
 
 
-def run_smoke(settings, download=False):
+def run_smoke(settings: Settings, download: bool = False) -> dict[str, Any]:
     root = settings.data_dir / "voice-smoke"
     fetch_fixtures(root, download)
     verifier = UserVoiceVerifier(settings, ModelRegistry(settings.data_dir / "models"))
@@ -61,7 +62,7 @@ def run_smoke(settings, download=False):
     # Public utterances are slightly shorter than the helper UI's recordings.
     # Silence padding meets the input duration limit without adding speech.
     samples = [
-        np.pad(recordings[name], (0, max(0, 48000 - len(recordings[name]))))
+        np.pad(recordings[name], (0, max(0, 3 * SAMPLE_RATE - len(recordings[name]))))
         for name in enrollment_files
     ]
     started = time.perf_counter()
@@ -79,7 +80,7 @@ def run_smoke(settings, download=False):
             "id": "test",
             "speaker": "A",  # Same anonymous label deliberately reused between calls.
             "start_ms": 0,
-            "end_ms": len(pcm) / 16,
+            "end_ms": len(pcm) * 1000 / SAMPLE_RATE,
             "text": "Public fixture; text is not used by voice classification.",
         }
         started = time.perf_counter()
@@ -90,7 +91,7 @@ def run_smoke(settings, download=False):
                 "expected": expected,
                 "role": result["role"],
                 "voice_score": result.get("voice_score"),
-                "audio_seconds": len(pcm) / 16000,
+                "audio_seconds": len(pcm) / SAMPLE_RATE,
                 "processing_seconds": time.perf_counter() - started,
             }
         )
@@ -116,7 +117,7 @@ def run_smoke(settings, download=False):
     }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--data-dir", type=Path, default=None)

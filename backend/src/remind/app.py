@@ -1,26 +1,21 @@
 import asyncio
 import base64
 import binascii
-import contextlib
 import time
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from remind.audio.media import decode_audio
+from remind.audio.speaker import UserVoiceVerifier
 from remind.config import Settings
-from remind.database import Database
-from remind.live.protocol import decode_packet
-from remind.live.queues import LatestQueue
 from remind.live.session import LiveSession
-from remind.memory.store import MemoryStore
-from remind.vision.engine import OpenCVVision
-from remind.vision.models import ModelRegistry
+from remind.live.stream import serve_vision
+from remind.runtime import Runtime
 
 
 class Correction(BaseModel):
@@ -47,68 +42,13 @@ class FactRemoval(BaseModel):
     version: int
 
 
-def create_app(settings=None, voice_verifier=None):
+def create_app(
+    settings: Settings | None = None, voice_verifier: UserVoiceVerifier | None = None
+) -> FastAPI:
     settings = settings or Settings()
-    db = Database(str(settings.data_dir / "remind.sqlite3"))
-    store = MemoryStore(db)
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
-    state = {
-        "vision": None, "vision_error": "Not started", "session": None,
-        "worker": None, "verifier": None,
-    }
-
-    @asynccontextmanager
-    async def lifespan(app):
-        await db.create_schema()
-        await store.recover_encounters()
-        registry = ModelRegistry(settings.data_dir / "models")
-        try:
-            state["vision"] = await asyncio.get_running_loop().run_in_executor(
-                pool, OpenCVVision, registry, settings.vision_threads
-            )
-            state["vision_error"] = None
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
-            state["vision_error"] = str(exc)
-        from remind.audio.speaker import UserVoiceVerifier
-        from remind.memory.worker import MemoryWorker
-
-        state["verifier"] = voice_verifier or UserVoiceVerifier(settings, registry)
-        worker = MemoryWorker(store, settings, registry, verifier=state["verifier"])
-        state["worker"] = worker
-
-        async def watchdog():
-            while True:
-                session = state["session"]
-                if (
-                    session
-                    and not session.stopped
-                    and time.monotonic() - session.last_heartbeat > 10
-                ):
-                    await session.stop()
-                await asyncio.sleep(0.25)
-
-        async def maintenance():
-            while True:
-                await worker.run_once()
-                await worker.cleanup()
-                await asyncio.sleep(0.25)
-
-        task = asyncio.create_task(maintenance())
-        guard = asyncio.create_task(watchdog())
-        yield
-        if state["session"]:
-            await state["session"].stop()
-        guard.cancel()
-        await asyncio.gather(guard, return_exceptions=True)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        await worker.close()
-        pool.shutdown(wait=True)
-        await db.close()
-
-    app = FastAPI(title="Remind", lifespan=lifespan)
-    app.state.store = store
+    runtime = Runtime(settings, voice_verifier)
+    store = runtime.store
+    app = FastAPI(title="Remind", lifespan=runtime.lifespan)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"]
     )
@@ -126,8 +66,8 @@ def create_app(settings=None, voice_verifier=None):
             return Response("Origin not allowed", status_code=403)
         return await call_next(request)
 
-    def active(generation, allow_stopped=False):
-        session = state["session"]
+    def active(generation: str, allow_stopped: bool = False) -> LiveSession:
+        session = runtime.session
         if not session or session.generation != generation:
             raise HTTPException(409, "Live session expired; start again")
         if session.stopped and (
@@ -140,29 +80,14 @@ def create_app(settings=None, voice_verifier=None):
             session.last_heartbeat = time.monotonic()
         return session
 
-    async def voice_state():
-        status = await store.voice_status()
-        verifier = state["verifier"]
-        readiness = (
-            verifier.readiness() if verifier and hasattr(verifier, "readiness")
-            else {"available": verifier is not None, "error": None}
-        )
-        return {
-            **status,
-            "reference_saved": status["ready"],
-            "ready": status["ready"] and readiness["available"],
-            "model_available": readiness["available"],
-            "error": readiness.get("error"),
-        }
-
     @app.get("/api/health")
     async def health():
-        voice = await voice_state()
+        voice = await runtime.voice_status()
         return {
-            "vision": {"available": state["vision"] is not None, "error": state["vision_error"]},
+            "vision": {"available": runtime.vision is not None, "error": runtime.vision_error},
             "memory": {
                 "available": bool(settings.openai_api_key),
-                "speaker": state["worker"].speaker_status if state["worker"] else "starting",
+                "speaker": runtime.worker.speaker_status,
                 "profile_learning_available": bool(settings.openai_api_key) and voice["ready"],
             },
             "voice": voice,
@@ -171,7 +96,7 @@ def create_app(settings=None, voice_verifier=None):
 
     @app.get("/api/user/voice")
     async def get_voice():
-        return await voice_state()
+        return await runtime.voice_status()
 
     @app.post("/api/user/voice")
     async def enroll_voice(request: Request):
@@ -190,17 +115,13 @@ def create_app(settings=None, voice_verifier=None):
             ) from exc
         if any(not sample or len(sample) > 4 * 1024 * 1024 for sample in samples):
             raise HTTPException(422, "Each voice recording must be between 1 byte and 4 MiB")
-        worker = state["worker"]
-        if worker is None:
-            raise HTTPException(503, "Voice processing is starting")
+        worker = runtime.worker
 
         def prepare():
-            from remind.audio.media import decode_audio
-
             decoded = [decode_audio(sample, max_seconds=20) for sample in samples]
             if any(not media["continuous"] for media in decoded):
                 raise ValueError("Voice samples contain interrupted audio; please record again")
-            return state["verifier"].enroll([media["pcm"] for media in decoded])
+            return runtime.verifier.enroll([media["pcm"] for media in decoded])
 
         try:
             profile = await asyncio.get_running_loop().run_in_executor(worker.pool, prepare)
@@ -209,12 +130,12 @@ def create_app(settings=None, voice_verifier=None):
         except (ValueError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
         await store.set_voice_profile(profile["embeddings"], profile["model"])
-        return await voice_state()
+        return await runtime.voice_status()
 
     @app.delete("/api/user/voice")
     async def delete_voice():
         await store.delete_voice_profile()
-        return await voice_state()
+        return await runtime.voice_status()
 
     @app.get("/api/people")
     async def people():
@@ -245,7 +166,7 @@ def create_app(settings=None, voice_verifier=None):
 
     @app.delete("/api/people/{ident}")
     async def forget(ident: str):
-        session = state["session"]
+        session = runtime.session
         if session:
             await session.stop()
             async with session.lock:
@@ -283,13 +204,13 @@ def create_app(settings=None, voice_verifier=None):
 
     @app.post("/api/session")
     async def start():
-        if state["vision"] is None:
-            raise HTTPException(503, state["vision_error"])
-        if state["session"] and not state["session"].stopped:
+        if runtime.vision is None:
+            raise HTTPException(503, runtime.vision_error)
+        if runtime.session and not runtime.session.stopped:
             raise HTTPException(409, "Another tab is using the camera session. Stop it first.")
         generation = str(uuid4())
-        state["session"] = LiveSession(generation, store, settings)
-        voice = await voice_state()
+        runtime.session = LiveSession(generation, store, settings)
+        voice = await runtime.voice_status()
         return {
             "generation": generation,
             "memory_available": bool(settings.openai_api_key),
@@ -299,8 +220,8 @@ def create_app(settings=None, voice_verifier=None):
 
     @app.post("/api/session/{generation}/stop")
     async def stop(generation: str):
-        if state["session"] and state["session"].generation == generation:
-            await state["session"].stop()
+        if runtime.session and runtime.session.generation == generation:
+            await runtime.session.stop()
         return {"pending_jobs": len(await store.pending_jobs())}
 
     @app.post("/api/live/{generation}/clips")
@@ -333,6 +254,8 @@ def create_app(settings=None, voice_verifier=None):
                     if total > 16 * 1024 * 1024:
                         raise HTTPException(413, "Clip exceeds 16 MiB")
                     f.write(chunk)
+            if total == 0:
+                raise HTTPException(422, "Clip is empty")
             job = await store.enqueue_job(
                 snapshot["encounter"],
                 metadata.window_id,
@@ -356,59 +279,12 @@ def create_app(settings=None, voice_verifier=None):
         except HTTPException:
             await socket.close(code=1008)
             return
+        engine = runtime.vision
+        if engine is None:
+            await socket.close(code=1011)
+            return
         await socket.accept()
-        queue = LatestQueue()
-
-        async def receive():
-            sequence = -1
-            while True:
-                header, data = decode_packet(await socket.receive_bytes())
-                active(generation)
-                if header["generation"] != generation or header["sequence"] <= sequence:
-                    continue
-                sequence = header["sequence"]
-                queue.put((header, data))
-
-        async def process():
-            processed = 0
-            started = time.monotonic()
-            while True:
-                header, data = await queue.get()
-                before = time.perf_counter()
-                try:
-                    observations = await asyncio.get_running_loop().run_in_executor(
-                        pool, state["vision"].detect, data
-                    )
-                    tracks = await session.observe(observations, header["capture_ms"])
-                    processed += 1
-                    await socket.send_json(
-                        {
-                            "type": "vision",
-                            "generation": generation,
-                            "sequence": header["sequence"],
-                            "capture_ms": header["capture_ms"],
-                            "tracks": tracks,
-                            "processing_ms": (time.perf_counter() - before) * 1000,
-                            "processed_fps": processed / max(0.001, time.monotonic() - started),
-                            "dropped": queue.dropped,
-                        }
-                    )
-                except ValueError as exc:
-                    await socket.send_json({"type": "error", "message": str(exc)})
-
-        tasks = [asyncio.create_task(receive()), asyncio.create_task(process())]
-        try:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-        except (WebSocketDisconnect, RuntimeError, ValueError, HTTPException):
-            pass
-        finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            with contextlib.suppress(RuntimeError):
-                await socket.close()
+        await serve_vision(socket, session, engine, runtime.vision_pool)
 
     return app
 

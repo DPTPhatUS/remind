@@ -92,7 +92,7 @@ test("export a real-model camera timing trace", async ({ page }) => {
     .getByRole("button", { name: "Download performance trace" })
     .click();
   const download = await downloadPromise;
-  await download.saveAs("../backend/.local/reports/browser-smoke-trace.json");
+  await download.saveAs("/tmp/remind-browser-smoke-trace.json");
   expect(errors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });

@@ -1,8 +1,11 @@
+import hashlib
+import io
+
 import numpy as np
 import pytest
 
 from remind.vision.gallery import FaceGallery
-from remind.vision.models import ModelRegistry
+from remind.vision.models import MANIFEST, ModelRegistry
 from remind.vision.quality import usable_face
 from remind.vision.tracking import Tracker
 
@@ -48,6 +51,34 @@ def test_corrupt_models_are_rejected(tmp_path):
         registry.verify("yunet")
 
 
+@pytest.mark.parametrize("model_id,license_name", [("yunet", "YuNet"), ("sface", "SFace")])
+def test_face_model_bundle_has_pinned_downloads_and_license(tmp_path, model_id, license_name):
+    model = ModelRegistry(tmp_path).models[model_id]
+    assert model["file"].endswith(".onnx")
+    assert model["size"] > 0
+    assert len(model["sha256"]) == 64
+    assert len(bytes.fromhex(model["sha256"])) == 32
+    assert model["url"].startswith("https://media.githubusercontent.com/media/opencv/opencv_zoo/")
+    assert (MANIFEST.parent / "licenses" / f"{license_name}.txt").read_text().strip()
+
+
 def test_dark_and_small_crops_are_not_enrollment_evidence():
     assert not usable_face(np.zeros((100, 100, 3), dtype=np.uint8), 0.99)
     assert not usable_face(np.ones((10, 10, 3), dtype=np.uint8) * 120, 0.99)
+
+
+def test_failed_model_download_does_not_leave_partial_files(tmp_path, monkeypatch):
+    registry = ModelRegistry(tmp_path)
+    registry.models = {
+        "example": {
+            "file": "example.onnx",
+            "size": 4,
+            "sha256": hashlib.sha256(b"good").hexdigest(),
+            "url": "https://example.com/model",
+        }
+    }
+    monkeypatch.setattr("remind.vision.models.urlopen", lambda *args, **kwargs: io.BytesIO(b"bad"))
+    with pytest.raises(ValueError, match="Invalid downloaded example"):
+        registry.install()
+    assert not (tmp_path / "example.onnx").exists()
+    assert not (tmp_path / "example.onnx.part").exists()

@@ -1,3 +1,11 @@
-.omo/*
-!.omo/rules/
-!.omo/rules/**
+# Local configuration and editor files
+.env
+.envrc
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Tool caches may also be created at the repository root
+.mypy_cache/
+.ruff_cache/

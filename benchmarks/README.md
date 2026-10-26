@@ -27,21 +27,23 @@ Use a consenting test participant or a public test fixture. For a local video:
 ffmpeg -i consented-test.mp4 -t 8 -vf scale=640:480 -r 25 -pix_fmt yuv420p camera.y4m
 ```
 
-Start the backend with `REMIND_DATA_DIR=.local/e2e REMIND_OPENAI_API_KEY=''`
-and start Vite as documented in the root README. Then:
+Run the configured browser suite:
 
 ```bash
 cd frontend
 npx playwright install chromium
-npx playwright test --workers=1
+npm run test:e2e
 # If bundled Chromium is unavailable but Chrome is installed:
-# PLAYWRIGHT_CHANNEL=chrome npx playwright test --workers=1
+# PLAYWRIGHT_CHANNEL=chrome npm run test:e2e
 ```
 
-The browser test uses a fake camera and real face inference, corrects a profile,
-stops/restarts capture and verifies returning-person recall. **It deletes all
-people in the server it tests. Never point it at a patient store.** Cloud calls
-are disabled in this test. Screenshots go to `/tmp/remind-*.png`.
+Playwright starts its own backend and Vite on `127.0.0.1:18000` and
+`127.0.0.1:15173`. Cloud calls are disabled and the backend uses only
+`backend/.local/e2e`. It refuses to reuse an existing server on those ports.
+The real-camera tests delete all people in that disposable store, then exercise
+automatic enrollment, profile correction, stopping, and returning-person recall.
+Screenshots and downloaded traces go to `/tmp/remind-*.png` and
+`/tmp/remind-browser-smoke-trace.json`.
 
 ## Conversation fixtures and voice smoke
 
@@ -130,6 +132,6 @@ outage, process restart, correction and forgetting while jobs run. Collect
 roughly 3,000 independent unknown trials before interpreting a zero-error run
 as evidence near the 0.1% false-identity target. A small pilot is only a pilot.
 
-No patient recordings or held-out accuracy dataset were available during the
-implementation. The implementation report documents the measurements actually
-performed, and does not claim the acceptance gates have passed.
+No patient recordings or held-out accuracy dataset are included. Record actual
+measurements separately from fixture results; successful tests do not establish
+that the evaluation gates have passed.

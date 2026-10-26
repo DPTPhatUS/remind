@@ -2,47 +2,45 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import aiosqlite
 import numpy as np
+from numpy.typing import ArrayLike
 
-from remind.database import Database
+from remind.database import Database, Record, rows
+from remind.memory.facts import (
+    IDENTITY_FIELDS,
+    SINGLE_VALUE_PREDICATES,
+    insert_fact,
+    load_facts,
+    refresh_profile,
+    save_claim,
+)
 
 PERSON_COLUMNS = "id,name,relationship,age,notes,version,profile_summary,highlights,created_at"
-IDENTITY_FIELDS = {"name", "relationship", "age", "notes"}
-# Exclusivity belongs to the attribute, not its whole category: a visitor may
-# have several degrees, qualifications, employers or concurrent work roles.
-SINGLE_VALUE_PREDICATES = IDENTITY_FIELDS | {"occupation", "residence"}
 
 
-def uid():
+def uid() -> str:
     return str(uuid4())
 
 
-def now():
+def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def normalized(value):
-    return " ".join(str(value).split()).casefold()
-
-
-async def rows(db, sql, args=()):
-    cursor = await db.execute(sql, args)
-    return [dict(r) for r in await cursor.fetchall()]
-
-
-def public_person(person):
+def public_person(person: Record) -> Record:
     return {**person, "highlights": json.loads(person["highlights"])}
 
 
 class MemoryStore:
-    def __init__(self, db: Database):
+    def __init__(self, db: Database) -> None:
         self.db = db
 
-    async def ensure_patient(self):
-        async with self.db.transaction() as db:
-            return (await rows(db, "SELECT * FROM patient"))[0]
-
-    async def create_person(self, name=None, relationship=None, thumbnail=None):
+    async def create_person(
+        self,
+        name: str | None = None,
+        relationship: str | None = None,
+        thumbnail: bytes | None = None,
+    ) -> Record:
         ident = uid()
         async with self.db.transaction() as db:
             await db.execute(
@@ -55,7 +53,7 @@ class MemoryStore:
                 if value
             }
             for key, value in supplied.items():
-                await self._insert_fact(
+                await insert_fact(
                     db,
                     ident,
                     None,
@@ -72,89 +70,48 @@ class MemoryStore:
                 await db.execute(
                     "UPDATE people SET manual=? WHERE id=?", (json.dumps(sorted(supplied)), ident)
                 )
-                await self._refresh_profile(db, ident)
+                await refresh_profile(db, ident)
+            result = await rows(db, f"SELECT {PERSON_COLUMNS} FROM people WHERE id=?", (ident,))
+            person = public_person(result[0])
         self.db.revision += 1
-        return await self.get_person(ident)
+        return person
 
-    async def get_person(self, ident):
+    async def get_person(self, ident: str) -> Record | None:
         async with self.db.transaction() as db:
             result = await rows(db, f"SELECT {PERSON_COLUMNS} FROM people WHERE id=?", (ident,))
             return public_person(result[0]) if result else None
 
-    async def thumbnail(self, ident):
+    async def thumbnail(self, ident: str) -> bytes | None:
         async with self.db.transaction() as db:
             result = await rows(db, "SELECT thumbnail FROM people WHERE id=?", (ident,))
             return result[0]["thumbnail"] if result else None
 
-    async def list_people(self):
+    async def list_people(self) -> list[Record]:
         async with self.db.transaction() as db:
             result = await rows(db, f"SELECT {PERSON_COLUMNS} FROM people ORDER BY created_at DESC")
             return [public_person(person) for person in result]
 
-    async def _facts(self, db, ident):
-        facts = await rows(
-            db, "SELECT * FROM facts WHERE person_id=? ORDER BY created_at DESC,id", (ident,)
-        )
-        for fact in facts:
-            fact["manual"] = bool(fact["manual"])
-            fact["evidence"] = await rows(
-                db,
-                "SELECT segment_id,quote FROM fact_evidence WHERE fact_id=? ORDER BY rowid",
-                (fact["id"],),
-            )
-        return facts
-
-    async def facts_for_person(self, ident):
+    async def facts_for_person(self, ident: str) -> list[Record]:
         async with self.db.transaction() as db:
-            return await self._facts(db, ident)
+            return await load_facts(db, ident)
 
-    async def _refresh_profile(self, db, ident):
-        found = await rows(db, "SELECT * FROM people WHERE id=?", (ident,))
-        if not found:
-            return
-        person = found[0]
-        manual = set(json.loads(person["manual"]))
-        accepted = await rows(
-            db,
-            "SELECT * FROM facts WHERE person_id=? AND subject='visitor' AND status='accepted' "
-            "AND temporal_status='current' ORDER BY manual DESC,created_at DESC,id",
-            (ident,),
-        )
-        for field in IDENTITY_FIELDS - {"notes"}:
-            if field in manual:
-                continue
-            candidates = [fact for fact in accepted if fact["predicate"] == field]
-            person[field] = candidates[0]["value"] if candidates else None
-            await db.execute(f"UPDATE people SET {field}=? WHERE id=?", (person[field], ident))
-        highlights = []
-        for fact in accepted:
-            if fact["predicate"] in {"name", "relationship", "age"}:
-                continue
-            text = f"{fact['predicate'].replace('_', ' ').capitalize()}: {fact['value']}"
-            if text not in highlights:
-                highlights.append(text)
-        identity = []
-        if person["name"]:
-            identity.append(person["name"])
-        if person["relationship"]:
-            identity.append(f"your {person['relationship']}")
-        if person["age"]:
-            identity.append(f"age {person['age']}")
-        summary = ", ".join(identity)
-        if highlights:
-            summary = ". ".join(filter(None, [summary, *highlights[:6]]))
-        await db.execute(
-            "UPDATE people SET profile_summary=?,highlights=? WHERE id=?",
-            (summary[:2000], json.dumps(highlights[:3]), ident),
-        )
-
-    async def _require_version(self, db, ident, version):
+    async def _require_version(
+        self,
+        db: aiosqlite.Connection,
+        ident: str,
+        version: int,
+    ) -> Record:
         current = await rows(db, "SELECT * FROM people WHERE id=?", (ident,))
         if not current or current[0]["version"] != version:
             raise ValueError("Person changed; reload before saving")
         return current[0]
 
-    async def correct_person(self, ident, fields, version):
+    async def correct_person(
+        self,
+        ident: str,
+        fields: dict[str, str | None],
+        version: int,
+    ) -> Record | None:
         if not fields or not set(fields) <= IDENTITY_FIELDS:
             raise ValueError("Invalid fields")
         async with self.db.transaction() as db:
@@ -169,7 +126,7 @@ class MemoryStore:
                     (now(), ident, key),
                 )
                 if value:
-                    await self._insert_fact(
+                    await insert_fact(
                         db,
                         ident,
                         None,
@@ -187,11 +144,17 @@ class MemoryStore:
                 "UPDATE people SET manual=?,version=version+1 WHERE id=?",
                 (json.dumps(sorted(manual)), ident),
             )
-            await self._refresh_profile(db, ident)
+            await refresh_profile(db, ident)
         self.db.revision += 1
         return await self.get_person(ident)
 
-    async def correct_fact(self, ident, fact_id, value, version):
+    async def correct_fact(
+        self,
+        ident: str,
+        fact_id: str,
+        value: str,
+        version: int,
+    ) -> Record | None:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("A fact value is required")
         async with self.db.transaction() as db:
@@ -215,9 +178,7 @@ class MemoryStore:
                 (now(), fact_id),
             )
             replacement = {**fact, "value": value.strip()}
-            replacement_id = await self._insert_fact(
-                db, ident, None, None, replacement, manual=True
-            )
+            replacement_id = await insert_fact(db, ident, None, None, replacement, manual=True)
             await db.execute(
                 "INSERT OR IGNORE INTO fact_evidence SELECT ?,segment_id,quote FROM fact_evidence "
                 "WHERE fact_id=?",
@@ -235,11 +196,11 @@ class MemoryStore:
                     (value.strip(), json.dumps(sorted(manual)), ident),
                 )
             await db.execute("UPDATE people SET version=version+1 WHERE id=?", (ident,))
-            await self._refresh_profile(db, ident)
+            await refresh_profile(db, ident)
         self.db.revision += 1
         return await self.person_memory(ident)
 
-    async def dismiss_fact(self, ident, fact_id, version):
+    async def dismiss_fact(self, ident: str, fact_id: str, version: int) -> Record | None:
         async with self.db.transaction() as db:
             current = await self._require_version(db, ident, version)
             found = await rows(
@@ -261,11 +222,11 @@ class MemoryStore:
             ):
                 await db.execute(f"UPDATE people SET {fact['predicate']}=NULL WHERE id=?", (ident,))
             await db.execute("UPDATE people SET version=version+1 WHERE id=?", (ident,))
-            await self._refresh_profile(db, ident)
+            await refresh_profile(db, ident)
         self.db.revision += 1
         return await self.person_memory(ident)
 
-    async def forget_person(self, ident):
+    async def forget_person(self, ident: str) -> None:
         async with self.db.transaction() as db:
             encounters = await rows(
                 db, "SELECT DISTINCT encounter_id FROM participants WHERE person_id=?", (ident,)
@@ -275,10 +236,9 @@ class MemoryStore:
                 eid = encounter["encounter_id"]
                 await db.execute("INSERT OR IGNORE INTO invalidated_encounters VALUES(?)", (eid,))
                 for job in await rows(db, "SELECT payload FROM jobs WHERE encounter_id=?", (eid,)):
-                    for key in ("audio_path", "clip_path"):
-                        path = json.loads(job["payload"]).get(key)
-                        if path:
-                            await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (path,))
+                    path = json.loads(job["payload"]).get("clip_path")
+                    if path:
+                        await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (path,))
                 await db.execute(
                     "UPDATE jobs SET status='cancelled',payload='{}',lease_token=NULL WHERE "
                     "encounter_id=?",
@@ -309,10 +269,10 @@ class MemoryStore:
             await db.execute("DELETE FROM people WHERE id=?", (ident,))
             for other in affected - {ident}:
                 await db.execute("UPDATE people SET version=version+1 WHERE id=?", (other,))
-                await self._refresh_profile(db, other)
+                await refresh_profile(db, other)
         self.db.revision += 1
 
-    async def voice_profile(self):
+    async def voice_profile(self) -> Record | None:
         async with self.db.transaction() as db:
             profile = (await rows(db, "SELECT * FROM user_voice WHERE id=1"))[0]
             if profile["embeddings"] is None:
@@ -324,7 +284,7 @@ class MemoryStore:
                 "created_at": profile["created_at"],
             }
 
-    async def voice_status(self):
+    async def voice_status(self) -> Record:
         async with self.db.transaction() as db:
             profile = (await rows(db, "SELECT * FROM user_voice WHERE id=1"))[0]
             embeddings = json.loads(profile["embeddings"]) if profile["embeddings"] else []
@@ -336,7 +296,7 @@ class MemoryStore:
                 "updated_at": profile["updated_at"],
             }
 
-    async def set_voice_profile(self, embeddings, model):
+    async def set_voice_profile(self, embeddings: ArrayLike, model: str) -> Record:
         vectors = np.asarray(embeddings, dtype=np.float32)
         if (
             not isinstance(model, str)
@@ -358,7 +318,7 @@ class MemoryStore:
         self.db.revision += 1
         return await self.voice_status()
 
-    async def delete_voice_profile(self):
+    async def delete_voice_profile(self) -> Record:
         async with self.db.transaction() as db:
             await db.execute(
                 "UPDATE user_voice SET version=version+1,model=NULL,embeddings=NULL,"
@@ -368,7 +328,12 @@ class MemoryStore:
         self.db.revision += 1
         return await self.voice_status()
 
-    async def add_template(self, person_id, embedding, model="sface-2021dec"):
+    async def add_template(
+        self,
+        person_id: str,
+        embedding: ArrayLike,
+        model: str = "sface-2021dec",
+    ) -> None:
         array = np.asarray(embedding, dtype=np.float32).reshape(-1)
         if array.size != 128 or not np.isfinite(array).all() or np.linalg.norm(array) < 1e-8:
             raise ValueError("Invalid face embedding")
@@ -386,11 +351,11 @@ class MemoryStore:
             )
         self.db.revision += 1
 
-    async def templates(self):
+    async def templates(self) -> list[Record]:
         async with self.db.transaction() as db:
             return await rows(db, "SELECT person_id,model,embedding FROM templates")
 
-    async def start_encounter(self, generation):
+    async def start_encounter(self, generation: str) -> str:
         ident = uid()
         async with self.db.transaction() as db:
             await db.execute(
@@ -399,14 +364,25 @@ class MemoryStore:
             )
         return ident
 
-    async def add_participant(self, encounter, person_id, track_id, start_ms):
+    async def get_encounter(self, encounter_id: str) -> Record | None:
+        async with self.db.transaction() as db:
+            result = await rows(db, "SELECT * FROM encounters WHERE id=?", (encounter_id,))
+            return result[0] if result else None
+
+    async def add_participant(
+        self,
+        encounter: str,
+        person_id: str,
+        track_id: str,
+        start_ms: float,
+    ) -> None:
         async with self.db.transaction() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO participants VALUES(?,?,?,?,NULL)",
                 (encounter, person_id, track_id, start_ms),
             )
 
-    async def end_participant(self, encounter, track_id, end_ms):
+    async def end_participant(self, encounter: str, track_id: str, end_ms: float) -> None:
         async with self.db.transaction() as db:
             await db.execute(
                 "UPDATE participants SET end_ms=? WHERE encounter_id=? AND track_id=? "
@@ -414,7 +390,7 @@ class MemoryStore:
                 (end_ms, encounter, track_id),
             )
 
-    async def close_encounter(self, encounter, summary=None):
+    async def close_encounter(self, encounter: str, summary: str | None = None) -> None:
         async with self.db.transaction() as db:
             await db.execute(
                 "UPDATE encounters SET ended_at=?,summary=COALESCE(?,summary) WHERE id=?",
@@ -422,15 +398,20 @@ class MemoryStore:
             )
         self.db.revision += 1
 
-    async def recover_encounters(self):
+    async def recover_encounters(self) -> None:
         async with self.db.transaction() as db:
             await db.execute("UPDATE encounters SET ended_at=? WHERE ended_at IS NULL", (now(),))
 
-    async def person_memory(self, ident, exclude_encounter_id=None):
-        person = await self.get_person(ident)
-        if person is None:
-            return None
+    async def person_memory(
+        self,
+        ident: str,
+        exclude_encounter_id: str | None = None,
+    ) -> Record | None:
         async with self.db.transaction() as db:
+            result = await rows(db, f"SELECT {PERSON_COLUMNS} FROM people WHERE id=?", (ident,))
+            if not result:
+                return None
+            person = public_person(result[0])
             encounters = await rows(
                 db,
                 "SELECT DISTINCT e.* FROM encounters e JOIN participants p ON p.encounter_id=e.id "
@@ -438,7 +419,7 @@ class MemoryStore:
                 "ORDER BY e.started_at DESC LIMIT 30",
                 (ident, exclude_encounter_id or ""),
             )
-            facts = await self._facts(db, ident)
+            facts = await load_facts(db, ident)
         return {
             **person,
             "last_encounter": encounters[0] if encounters else None,
@@ -446,7 +427,12 @@ class MemoryStore:
             "facts": facts,
         }
 
-    async def recent_context(self, encounter_id, limit=40, before_ms=None):
+    async def recent_context(
+        self,
+        encounter_id: str,
+        limit: int = 40,
+        before_ms: float | None = None,
+    ) -> list[Record]:
         async with self.db.transaction() as db:
             segments = await rows(
                 db,
@@ -457,7 +443,7 @@ class MemoryStore:
             )
         return [json.loads(segment["data"]) for segment in reversed(segments)]
 
-    async def enqueue_job(self, encounter, window_key, payload):
+    async def enqueue_job(self, encounter: str, window_key: str, payload: Record) -> str:
         async with self.db.transaction() as db:
             if await rows(db, "SELECT id FROM invalidated_encounters WHERE id=?", (encounter,)):
                 raise ValueError("This encounter was forgotten")
@@ -479,7 +465,7 @@ class MemoryStore:
             )
             return ident
 
-    async def pending_jobs(self):
+    async def pending_jobs(self) -> list[Record]:
         async with self.db.transaction() as db:
             return await rows(
                 db,
@@ -487,7 +473,7 @@ class MemoryStore:
                 "WHERE status IN ('pending','running','failed') ORDER BY created_at",
             )
 
-    async def retry_job(self, ident):
+    async def retry_job(self, ident: str) -> bool:
         async with self.db.transaction() as db:
             result = await db.execute(
                 "UPDATE jobs SET status='pending',attempts=0,next_at=0,error=NULL "
@@ -497,7 +483,7 @@ class MemoryStore:
             )
             return result.rowcount == 1
 
-    async def claim_job(self, worker_id, now_ms):
+    async def claim_job(self, worker_id: str, now_ms: int) -> Record | None:
         async with self.db.transaction() as db:
             await db.execute(
                 "UPDATE jobs SET status='failed',error='Retry limit reached',lease_token=NULL "
@@ -528,7 +514,7 @@ class MemoryStore:
             )
             return {**job, "lease_token": token, "payload": json.loads(job["payload"])}
 
-    async def renew_lease(self, ident, token, now_ms):
+    async def renew_lease(self, ident: str, token: str, now_ms: int) -> bool:
         async with self.db.transaction() as db:
             result = await db.execute(
                 "UPDATE jobs SET lease_until=? WHERE id=? AND lease_token=? AND status='running'",
@@ -536,7 +522,7 @@ class MemoryStore:
             )
             return result.rowcount == 1
 
-    async def fail_job(self, ident, token, error, now_ms):
+    async def fail_job(self, ident: str, token: str, error: str, now_ms: int) -> None:
         async with self.db.transaction() as db:
             await db.execute(
                 "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,"
@@ -545,185 +531,7 @@ class MemoryStore:
                 (str(error)[:240], now_ms + 5000, ident, token),
             )
 
-    async def _insert_fact(
-        self, db, person_id, encounter_id, job_id, fact, status="accepted", manual=False
-    ):
-        ident, stamp = uid(), now()
-        await db.execute(
-            "INSERT INTO facts(id,person_id,encounter_id,job_id,subject,category,predicate,value,"
-            "temporal_status,valid_from,valid_to,status,manual,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                ident,
-                person_id,
-                encounter_id,
-                job_id,
-                fact["subject"],
-                fact["category"],
-                fact["predicate"],
-                fact["value"],
-                fact.get("temporal_status", "current"),
-                fact.get("valid_from"),
-                fact.get("valid_to"),
-                status,
-                int(manual),
-                stamp,
-                stamp,
-            ),
-        )
-        return ident
-
-    async def _save_claim(self, db, person, encounter_id, job_id, fact, sources):
-        required = ("subject", "category", "predicate", "value")
-        if any(not isinstance(fact.get(key), str) or not fact[key].strip() for key in required):
-            return
-        if fact.get("temporal_status", "current") not in {"current", "past", "planned"}:
-            return
-        evidence = fact.get("evidence", [])
-        if not isinstance(evidence, list) or not evidence:
-            return
-        validated = []
-        for source in evidence:
-            if not isinstance(source, dict):
-                return
-            segment = sources.get(source.get("segment_id"))
-            quote = source.get("quote")
-            if (
-                not segment
-                or not isinstance(quote, str)
-                or not quote.strip()
-                or quote not in segment.get("text", "")
-                or segment.get("role") not in {"user", "visitor"}
-            ):
-                return
-            validated.append({"segment_id": source["segment_id"], "quote": quote})
-        if not any(sources[source["segment_id"]].get("role") == "visitor" for source in validated):
-            return
-        operation = fact.get("operation", "add")
-        if operation not in {"add", "correct", "change"}:
-            return
-        all_facts = await rows(
-            db,
-            "SELECT * FROM facts WHERE person_id=? AND subject=? AND predicate=?",
-            (person["id"], fact["subject"], fact["predicate"]),
-        )
-        # A manual removal/correction suppresses the removed claim even if a
-        # later extraction adds dates or changes its temporal classification.
-        if any(
-            old["manual"]
-            and old["status"] in {"dismissed", "superseded"}
-            and normalized(old["value"]) == normalized(fact["value"])
-            for old in all_facts
-        ):
-            return
-        matching = next(
-            (
-                old
-                for old in all_facts
-                if normalized(old["value"]) == normalized(fact["value"])
-                and old["temporal_status"] == fact.get("temporal_status", "current")
-                and old["valid_from"] == fact.get("valid_from")
-                and old["valid_to"] == fact.get("valid_to")
-            ),
-            None,
-        )
-        if matching and (
-            matching["status"] == "dismissed"
-            or (matching["status"] == "superseded" and (matching["manual"] or operation == "add"))
-        ):
-            return
-        current = [
-            old
-            for old in all_facts
-            if old["status"] == "accepted" and old["temporal_status"] == "current"
-        ]
-        target_id = fact.get("target_fact_id")
-        target = next(
-            (old for old in all_facts if old["id"] == target_id and old["status"] == "accepted"),
-            None,
-        )
-        if operation in {"correct", "change"} and not target:
-            return
-        if operation == "change" and (
-            target["temporal_status"] != "current"
-            or fact.get("temporal_status", "current") != "current"
-        ):
-            return
-        manual_field = fact["subject"] == "visitor" and fact["predicate"] in json.loads(
-            person["manual"]
-        )
-        singleton = fact["predicate"] in SINGLE_VALUE_PREDICATES
-        protected = manual_field or (singleton and any(old["manual"] for old in current))
-        conflict = protected or (
-            singleton and bool(current) and fact.get("temporal_status", "current") == "current"
-        )
-        if operation in {"correct", "change"}:
-            if target["manual"] or manual_field:
-                conflict = True
-            elif matching and matching["id"] == target_id:
-                conflict = False
-            elif not await self._newer_than_target(db, encounter_id, validated, sources, target_id):
-                # Upload order is independent of observation order. Keep late
-                # evidence without allowing it to reverse a newer current state.
-                conflict = True
-            else:
-                await db.execute(
-                    "UPDATE facts SET status='superseded',temporal_status=CASE WHEN ?='change' "
-                    "THEN 'past' ELSE temporal_status END,valid_to=COALESCE(?,valid_to),"
-                    "updated_at=? WHERE id=?",
-                    (operation, fact.get("valid_from"), now(), target_id),
-                )
-                conflict = False
-        if matching and matching["status"] != "superseded":
-            fact_id = matching["id"]
-            status = matching["status"]
-            if operation in {"correct", "change"} and not conflict:
-                status = "accepted"
-            await db.execute(
-                "UPDATE facts SET status=?,updated_at=? WHERE id=?", (status, now(), fact_id)
-            )
-        else:
-            fact_id = await self._insert_fact(
-                db,
-                person["id"],
-                encounter_id,
-                job_id,
-                fact,
-                status="conflict" if conflict else "accepted",
-            )
-        for source in validated:
-            await db.execute(
-                "INSERT OR IGNORE INTO fact_evidence VALUES(?,?,?)",
-                (fact_id, source["segment_id"], source["quote"]),
-            )
-
-    async def _newer_than_target(self, db, encounter_id, evidence, sources, target_id):
-        encounter = (
-            await rows(db, "SELECT started_at FROM encounters WHERE id=?", (encounter_id,))
-        )[0]
-        current_ends = [
-            sources[item["segment_id"]].get("end_ms")
-            for item in evidence
-            if sources[item["segment_id"]].get("role") == "visitor"
-        ]
-        if not current_ends or any(not isinstance(value, (int, float)) for value in current_ends):
-            return False
-        observed = (encounter["started_at"], max(current_ends))
-        prior = await rows(
-            db,
-            "SELECT e.started_at,t.data FROM fact_evidence ev "
-            "JOIN transcripts t ON t.id=ev.segment_id JOIN encounters e ON e.id=t.encounter_id "
-            "WHERE ev.fact_id=?",
-            (target_id,),
-        )
-        prior_observations = []
-        for row in prior:
-            segment = json.loads(row["data"])
-            if segment.get("role") == "visitor" and isinstance(segment.get("end_ms"), (int, float)):
-                prior_observations.append((row["started_at"], segment["end_ms"]))
-        return bool(prior_observations) and observed > max(prior_observations)
-
-    async def finish_job(self, ident, token, result):
+    async def finish_job(self, ident: str, token: str, result: Record) -> bool:
         async with self.db.transaction() as db:
             found = await rows(
                 db,
@@ -787,8 +595,8 @@ class MemoryStore:
                 and visitor_id in payload.get("versions", {})
             ):
                 for fact in result.get("facts", []):
-                    await self._save_claim(db, people[0], eid, ident, fact, sources)
-                await self._refresh_profile(db, visitor_id)
+                    await save_claim(db, people[0], eid, ident, fact, sources)
+                await refresh_profile(db, visitor_id)
             order = payload.get("end_ms", 0)
             await db.execute(
                 "UPDATE encounters SET summary=COALESCE(?,summary),summary_order=? "
@@ -806,7 +614,16 @@ class MemoryStore:
         self.db.revision += 1
         return True
 
-    async def processing_metrics(self):
+    async def processing_metrics(self) -> list[Record]:
         async with self.db.transaction() as db:
             result = await rows(db, "SELECT job_id,data FROM job_metrics ORDER BY rowid")
         return [{"job_id": metric["job_id"], **json.loads(metric["data"])} for metric in result]
+
+    async def pending_cleanup(self) -> list[str]:
+        async with self.db.transaction() as db:
+            result = await rows(db, "SELECT path FROM cleanup")
+            return [entry["path"] for entry in result]
+
+    async def complete_cleanup(self, path: str) -> None:
+        async with self.db.transaction() as db:
+            await db.execute("DELETE FROM cleanup WHERE path=?", (path,))

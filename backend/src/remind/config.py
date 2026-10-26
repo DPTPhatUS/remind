@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     openai_transcribe_model: str = "gpt-4o-transcribe-diarize"
     match_threshold: float = Field(default=0.55, ge=0, le=1)
     match_margin: float = Field(default=0.08, ge=0, le=1)
-    enrollment_ms: int = 2000
-    min_observations: int = 5
-    vision_threads: int = 4
+    enrollment_ms: int = Field(default=2000, gt=0)
+    min_observations: int = Field(default=5, ge=1)
+    vision_threads: int = Field(default=4, ge=1)
     # ECAPA cosine operating points; calibrate on staged Remind conversations.
     voice_user_threshold: float = Field(default=0.65, ge=0, le=1)
     voice_visitor_threshold: float = Field(default=0.35, ge=-1, le=1)
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     ]
 
     @model_validator(mode="after")
-    def check_voice_thresholds(self):
+    def validate_settings(self) -> "Settings":
         if self.voice_visitor_threshold >= self.voice_user_threshold:
             raise ValueError("Voice visitor threshold must be below user threshold")
         try:

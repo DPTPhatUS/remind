@@ -1,7 +1,7 @@
 import pytest
 
-from remind.database import Database
-from remind.memory.store import MemoryStore, rows, uid
+from remind.database import Database, rows
+from remind.memory.store import MemoryStore, uid
 
 
 def claim(value, predicate="interest", category="interests", **fields):
@@ -76,15 +76,10 @@ async def test_person_and_new_encounters_survive_store_reload(store):
 
 async def test_same_job_key_creates_only_one_job(store):
     encounter = await store.start_encounter("generation-1")
-    a = await store.enqueue_job(encounter, "window-1", {"audio_path": "one.wav"})
-    b = await store.enqueue_job(encounter, "window-1", {"audio_path": "one.wav"})
+    a = await store.enqueue_job(encounter, "window-1", {"clip_path": "one.wav"})
+    b = await store.enqueue_job(encounter, "window-1", {"clip_path": "one.wav"})
     assert a == b
     assert len(await store.pending_jobs()) == 1
-
-
-async def test_single_patient_is_reused(store):
-    assert (await store.ensure_patient())["id"] == 1
-    assert (await store.ensure_patient())["id"] == 1
 
 
 async def test_correction_and_forget_invalidate_old_jobs(store):
@@ -99,8 +94,8 @@ async def test_correction_and_forget_invalidate_old_jobs(store):
 
 
 async def test_actual_database_reopen(tmp_path):
-    url = f"sqlite+aiosqlite:///{tmp_path / 'persistent.db'}"
-    db = Database(url)
+    path = tmp_path / "persistent.db"
+    db = Database(path)
     await db.create_schema()
     store = MemoryStore(db)
     p = await store.create_person(name="Anna")
@@ -108,7 +103,7 @@ async def test_actual_database_reopen(tmp_path):
     await store.add_participant(encounter, p["id"], "a", 0)
     await store.close_encounter(encounter, "Sunday lunch")
     await db.close()
-    db = Database(url)
+    db = Database(path)
     await db.create_schema()
     memory = await MemoryStore(db).person_memory(p["id"])
     assert memory["last_encounter"]["summary"] == "Sunday lunch"
@@ -662,11 +657,15 @@ async def test_compatible_qualifications_and_work_roles_accumulate(store):
     encounter = await store.start_encounter("qualifications")
     await store.add_participant(encounter, person["id"], "visitor", 0)
     await commit_claims(
-        store, person, encounter,
+        store,
+        person,
+        encounter,
         [claim("BSc biology", "degree", "education"), claim("teacher", "work_role", "work")],
     )
     facts = await commit_claims(
-        store, person, encounter,
+        store,
+        person,
+        encounter,
         [claim("MSc chemistry", "degree", "education"), claim("coach", "work_role", "work")],
     )
     assert len(facts) == 4

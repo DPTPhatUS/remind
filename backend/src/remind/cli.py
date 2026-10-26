@@ -8,7 +8,7 @@ from remind.config import Settings
 from remind.vision.models import ModelRegistry
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Remind local runtime tools")
     commands = parser.add_subparsers(dest="command", required=True)
     models = commands.add_parser("models")
@@ -28,17 +28,18 @@ def main():
         registry.install()
         print("Verified model installation complete.")
     elif args.command == "doctor":
+        model_status: dict[str, str] = {}
         result = {
             "vision_device": "cpu",
             "voice_device": "cpu",
             "cloud_key_configured": bool(settings.openai_api_key),
-            "models": {},
+            "models": model_status,
         }
         for name in registry.models:
             try:
-                result["models"][name] = str(registry.verify(name))
+                model_status[name] = str(registry.verify(name))
             except (FileNotFoundError, ValueError) as exc:
-                result["models"][name] = str(exc)
+                model_status[name] = str(exc)
         if importlib.util.find_spec("torch"):
             import torch
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { downloadFile } from "@/lib/download";
 import type {
   FaceTrack,
   SessionStatus,
@@ -10,22 +11,28 @@ import { captureFrames } from "./capture";
 import { recordClips } from "./audio";
 import { acceptResult } from "./protocol";
 
+type ClipRecorder = ReturnType<typeof recordClips>;
+type SessionState = "idle" | "starting" | "live" | "saving";
+type Job = { id: string; status: string };
+type VisionResponse = VisionMessage | { type: "error"; message: string };
+
 type Resources = {
   stream?: MediaStream;
   socket?: WebSocket;
   generation?: string;
   stopFrames?: () => void;
-  clips?: ReturnType<typeof recordClips>;
+  clips?: ClipRecorder;
 };
 export function useLiveSession() {
   const video = useRef<HTMLVideoElement>(null);
-  const [status, setStatus] = useState("idle");
+  const [status, setStatus] = useState<SessionState>("idle");
   const [error, setError] = useState("");
   const [memoryStatus, setMemoryStatus] = useState("");
   const [voiceReady, setVoiceReady] = useState<boolean | null>(null);
   const [uploadPaused, setUploadPaused] = useState(false);
-  const retainedClips = useRef<ReturnType<typeof recordClips> | null>(null);
+  const retainedClips = useRef<ClipRecorder | null>(null);
   const [jobsStatus, setJobsStatus] = useState("");
+  const [hasFailedJobs, setHasFailedJobs] = useState(false);
   const [tracks, setTracks] = useState<FaceTrack[]>([]);
   const [diagnostics, setDiagnostics] = useState({
     fps: 0,
@@ -35,12 +42,16 @@ export function useLiveSession() {
   });
   const resources = useRef<Resources>({});
   const trace = useRef<Record<string, unknown>[]>([]);
-  const epoch = useRef(0),
-    lastResult = useRef(0);
+  const epoch = useRef(0);
+  const lastResult = useRef(0);
   const stop = useCallback(async () => {
     const token = ++epoch.current;
     const current = resources.current;
     resources.current = {};
+    if (!current.generation) {
+      setStatus("idle");
+      return;
+    }
     setStatus("saving");
     current.stopFrames?.();
     const flushing = current.clips?.stop();
@@ -58,13 +69,14 @@ export function useLiveSession() {
     if (token === epoch.current) setStatus("idle");
   }, []);
   const start = useCallback(async () => {
-    const token = ++epoch.current;
     if (uploadPaused) {
       setError(
         "Download or retry the retained conversation before starting another session.",
       );
       return;
     }
+    const token = ++epoch.current;
+    retainedClips.current = null;
     trace.current = [];
     setStatus("starting");
     setError("");
@@ -90,9 +102,10 @@ export function useLiveSession() {
         return;
       }
       resources.current.stream = stream;
-      if (!video.current) throw new Error("Camera view unavailable");
-      video.current.srcObject = stream;
-      await video.current.play();
+      const preview = video.current;
+      if (!preview) throw new Error("Camera view unavailable");
+      preview.srcObject = stream;
+      await preview.play();
       if (token !== epoch.current) return;
       const url = new URL(
         `/api/live/${session.generation}/vision`,
@@ -104,9 +117,7 @@ export function useLiveSession() {
       let lastSequence = -1;
       socket.onmessage = (event) => {
         if (token !== epoch.current) return;
-        const message = JSON.parse(event.data) as VisionMessage & {
-          message?: string;
-        };
+        const message = JSON.parse(event.data) as VisionResponse;
         if (message.type !== "vision") {
           setError(message.message ?? "Vision error");
           return;
@@ -147,25 +158,28 @@ export function useLiveSession() {
         }
         try {
           resources.current.stopFrames = captureFrames(
-            video.current!,
+            preview,
             socket,
             session.generation,
           );
-          if (session.memory_available)
-            retainedClips.current = resources.current.clips = recordClips(
+          if (session.memory_available) {
+            const clips: ClipRecorder = recordClips(
               stream,
               session.generation,
               (message) => {
-                if (token === epoch.current) setMemoryStatus(message);
+                if (retainedClips.current === clips) setMemoryStatus(message);
               },
               (paused) => {
-                if (token === epoch.current || paused) setUploadPaused(paused);
+                if (retainedClips.current === clips) setUploadPaused(paused);
               },
             );
-          else
+            retainedClips.current = clips;
+            resources.current.clips = clips;
+          } else {
             setMemoryStatus(
               "Conversation memory is off. Configure the OpenAI API key to enable it.",
             );
+          }
           setStatus("live");
         } catch (e) {
           setError(String(e));
@@ -191,29 +205,47 @@ export function useLiveSession() {
       .then((voice) => {
         if (active) setVoiceReady(voice.ready);
       })
-      .catch(() => {});
-    const poll = window.setInterval(() => {
-      void api<{ status: string }[]>("/jobs")
-        .then((jobs) => {
-          if (!active) return;
-          const failed = jobs.filter((j) => j.status === "failed").length;
-          setJobsStatus(
-            failed
-              ? `${failed} conversation clip(s) could not be processed. Check your connection or service setup, then retry.`
-              : jobs.length
-                ? `${jobs.length} conversation clip(s) processing.`
-                : "",
+      .catch(() => {
+        if (active) {
+          setMemoryStatus(
+            "Voice setup status is unavailable. Check the server connection.",
           );
-        })
-        .catch(() => {});
-    }, 3000);
+        }
+      });
+    let poll = 0;
+    async function pollJobs() {
+      try {
+        const jobs = await api<Job[]>("/jobs");
+        if (!active) return;
+        const failed = jobs.filter((job) => job.status === "failed").length;
+        setHasFailedJobs(failed > 0);
+        setJobsStatus(
+          failed
+            ? `${failed} conversation clip(s) could not be processed. Check your connection or service setup, then retry.`
+            : jobs.length
+              ? `${jobs.length} conversation clip(s) processing.`
+              : "",
+        );
+      } catch {
+        if (active) {
+          setJobsStatus(
+            "Conversation processing status is unavailable. Check the server connection.",
+          );
+        }
+      } finally {
+        if (active) {
+          poll = window.setTimeout(() => void pollJobs(), 3000);
+        }
+      }
+    }
+    void pollJobs();
     const timer = window.setInterval(() => {
       if (performance.now() - lastResult.current > 500)
         setTracks((current) => (current.length ? [] : current));
     }, 250);
     return () => {
       active = false;
-      clearInterval(poll);
+      clearTimeout(poll);
       clearInterval(timer);
       void stop();
     };
@@ -222,13 +254,10 @@ export function useLiveSession() {
     video.current = node;
   }, []);
   const retryUpload = () => retainedClips.current?.retry();
-  const downloadClip = () => {
-    retainedClips.current?.download();
-    setUploadPaused(false);
-  };
+  const downloadClip = () => retainedClips.current?.download();
   const retryJobs = async () => {
     try {
-      const jobs = await api<{ id: string; status: string }[]>("/jobs");
+      const jobs = await api<Job[]>("/jobs");
       for (const job of jobs.filter((j) => j.status === "failed"))
         await api(`/jobs/${job.id}/retry`, { method: "POST" });
       setJobsStatus("Retrying failed conversations.");
@@ -245,14 +274,10 @@ export function useLiveSession() {
         "painted_ms is a two-animation-frame upper bound after result receipt",
       frames: trace.current,
     };
-    const url = URL.createObjectURL(
+    downloadFile(
       new Blob([JSON.stringify(data)], { type: "application/json" }),
+      "remind-performance.json",
     );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "remind-performance.json";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return {
     attachVideo,
@@ -261,6 +286,7 @@ export function useLiveSession() {
     memoryStatus,
     voiceReady,
     jobsStatus,
+    hasFailedJobs,
     uploadPaused,
     retryUpload,
     downloadClip,

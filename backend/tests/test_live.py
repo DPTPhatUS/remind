@@ -1,13 +1,19 @@
 import json
 import struct
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.testclient import TestClient
 
 from remind.config import Settings
 from remind.live.protocol import decode_packet
 from remind.live.queues import LatestQueue
 from remind.live.session import LiveSession
+from remind.live.stream import serve_vision
 
 
 def test_packet_rejects_invalid_lengths_and_nonfinite_time():
@@ -22,12 +28,71 @@ def test_packet_rejects_invalid_lengths_and_nonfinite_time():
         decode_packet(struct.pack(">I", len(header)) + header + b"x")
 
 
+@pytest.mark.parametrize("field", ["version", "sequence", "capture_ms"])
+def test_packet_rejects_booleans_as_numbers(field):
+    header = {"version": 1, "generation": "a", "sequence": 1, "capture_ms": 0}
+    header[field] = True
+    encoded = json.dumps(header).encode()
+    with pytest.raises(ValueError):
+        decode_packet(struct.pack(">I", len(encoded)) + encoded + b"image")
+
+
+@pytest.mark.parametrize("header", [b"null", b"[]", b"\xff"])
+def test_packet_rejects_non_object_or_invalid_utf8_header(header):
+    with pytest.raises(ValueError):
+        decode_packet(struct.pack(">I", len(header)) + header + b"image")
+
+
 async def test_queue_keeps_only_latest():
     queue = LatestQueue()
     for i in range(100):
         queue.put(i)
     assert await queue.get() == 99
     assert queue.dropped == 99
+
+
+def test_vision_stream_rejects_stale_frames_malformed_packets_and_stopped_sessions():
+    session = SimpleNamespace(
+        generation="one", stopped=False, last_heartbeat=0, observe=AsyncMock(return_value=[])
+    )
+    engine = SimpleNamespace(detect=Mock(return_value=[]))
+    app = FastAPI()
+
+    def packet(sequence, generation="one"):
+        header = json.dumps(
+            {"version": 1, "generation": generation, "sequence": sequence, "capture_ms": 100}
+        ).encode()
+        return struct.pack(">I", len(header)) + header + b"frame"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+
+        @app.websocket("/vision")
+        async def vision(socket: WebSocket):
+            await socket.accept()
+            await serve_vision(socket, session, engine, pool)
+
+        with TestClient(app) as client:
+            with client.websocket_connect("/vision") as socket:
+                socket.send_bytes(packet(99, generation="old"))
+                socket.send_bytes(packet(2))
+                assert socket.receive_json()["sequence"] == 2
+                socket.send_bytes(packet(1))
+                socket.send_bytes(packet(3))
+                assert socket.receive_json()["sequence"] == 3
+                socket.send_bytes(b"malformed")
+                with pytest.raises(WebSocketDisconnect) as disconnected:
+                    socket.receive_json()
+                assert disconnected.value.code == 1008
+            session.stopped = True
+            with client.websocket_connect("/vision") as socket:
+                socket.send_bytes(packet(4))
+                with pytest.raises(WebSocketDisconnect) as disconnected:
+                    socket.receive_json()
+                assert disconnected.value.code == 1000
+
+    assert engine.detect.call_count == 2
+    assert session.observe.await_count == 2
+    assert session.last_heartbeat > 0
 
 
 async def test_enroll_return_and_wrong_generation(store):
@@ -142,4 +207,35 @@ async def test_memory_commit_refreshes_live_reminder_without_restarting_camera(s
     tracks = await session.observe([face()], 2400)
     assert tracks[0]["memory"]["name"] == "Anna"
     assert tracks[0]["memory"]["last_encounter"] is None
+    await session.stop()
+
+
+async def test_forgotten_visitor_cannot_be_bound_to_a_delayed_clip(store):
+    session = LiveSession("one", store, Settings())
+    for stamp in range(0, 2400, 100):
+        tracks = await session.observe([face()], stamp)
+    await store.forget_person(tracks[0]["person_id"])
+    assert await session.snapshot(2100, 2300) is None
+    await session.stop()
+
+
+async def test_gallery_refresh_does_not_hide_a_concurrent_enrollment(store, monkeypatch):
+    read_templates = store.templates
+    visitor = await store.create_person(name="Anna")
+    added = False
+
+    async def read_then_enroll():
+        nonlocal added
+        templates = await read_templates()
+        if not added:
+            added = True
+            await store.add_template(visitor["id"], face()["embedding"])
+        return templates
+
+    monkeypatch.setattr(store, "templates", read_then_enroll)
+    session = LiveSession("one", store, Settings())
+    for stamp in (0, 100, 200, 300):
+        tracks = await session.observe([face()], stamp)
+    assert tracks[0]["person_id"] == visitor["id"]
+    assert len(await store.list_people()) == 1
     await session.stop()

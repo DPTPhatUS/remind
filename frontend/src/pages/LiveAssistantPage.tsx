@@ -3,6 +3,22 @@ import { Link } from "react-router-dom";
 import { useLiveSession } from "@/features/live/session";
 import type { FaceTrack } from "@/lib/api-types";
 
+const cameraStatusLabels = {
+  idle: "Camera is off",
+  starting: "Starting camera…",
+  live: "Camera is live",
+  saving: "Saving conversation…",
+};
+
+function reminderLeft([left, , width]: FaceTrack["box"]) {
+  const cardWidth = "var(--face-card-width)";
+  const preferredLeft =
+    left > 0.5
+      ? `calc(${left * 100}% - ${cardWidth} - 10px)`
+      : `calc(${(left + width) * 100}% + 10px)`;
+  return `clamp(8px, ${preferredLeft}, calc(100% - ${cardWidth} - 8px))`;
+}
+
 function VisitorReminder({ track }: { track: FaceTrack }) {
   return (
     <>
@@ -47,6 +63,7 @@ export function LiveAssistantPage() {
     memoryStatus,
     voiceReady,
     jobsStatus,
+    hasFailedJobs,
     uploadPaused,
     retryUpload,
     downloadClip,
@@ -123,7 +140,7 @@ export function LiveAssistantPage() {
               <div
                 className="face-card"
                 style={{
-                  left: `clamp(8px, ${track.box[0] > 0.5 ? `calc(${track.box[0] * 100}% - clamp(150px, 20vw, 250px) - 10px)` : `calc(${(track.box[0] + track.box[2]) * 100}% + 10px)`}, calc(100% - clamp(150px, 20vw, 250px) - 8px))`,
+                  left: reminderLeft(track.box),
                 }}
               >
                 <VisitorReminder track={track} />
@@ -143,11 +160,7 @@ export function LiveAssistantPage() {
       )}
       <div className="live-footer">
         <span className={`status-dot ${status === "live" ? "active" : ""}`} />
-        {status === "live"
-          ? "Camera is live"
-          : status === "starting"
-            ? "Starting camera…"
-            : "Camera is off"}
+        {cameraStatusLabels[status]}
         <span>
           {memoryStatus} {jobsStatus}
         </span>
@@ -169,7 +182,7 @@ export function LiveAssistantPage() {
           </button>
         </div>
       )}
-      {jobsStatus.includes("could not") && (
+      {hasFailedJobs && (
         <button className="secondary" onClick={() => void retryJobs()}>
           Retry failed conversations
         </button>

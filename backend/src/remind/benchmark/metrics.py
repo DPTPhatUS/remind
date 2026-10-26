@@ -1,9 +1,11 @@
 import math
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
 
-def summarize(events):
+def summarize(events: Sequence[dict[str, Any]]) -> dict[str, Any]:
     unique = {
         (e.get("generation"), e["sequence"]): e for e in events if not e.get("interpolated", False)
     }
@@ -37,7 +39,9 @@ def summarize(events):
     }
 
 
-def identification_metrics(truth, predictions):
+def identification_metrics(
+    truth: Sequence[str | None], predictions: Sequence[str | None]
+) -> dict[str, Any]:
     known = [(a, b) for a, b in zip(truth, predictions, strict=True) if a is not None]
     unknown = [b for a, b in zip(truth, predictions, strict=True) if a is None]
     return {
@@ -52,7 +56,7 @@ def identification_metrics(truth, predictions):
     }
 
 
-def fraction(numerator, denominator):
+def fraction(numerator: int, denominator: int) -> dict[str, int | float | None]:
     if not 0 <= numerator <= denominator:
         raise ValueError("Invalid metric numerator/denominator")
     return {
@@ -62,9 +66,11 @@ def fraction(numerator, denominator):
     }
 
 
-def percentiles(values):
+def percentiles(values: Sequence[float]) -> dict[str, int | float | None]:
     if not values:
         return {"count": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("Latency values must be finite and non-negative")
     return {
         "count": len(values),
         "p50_ms": float(np.percentile(values, 50)),
@@ -74,7 +80,7 @@ def percentiles(values):
     }
 
 
-def evaluate_trace(trace):
+def evaluate_trace(trace: dict[str, Any]) -> dict[str, Any]:
     """Score browser timing plus independently adjudicated encounter/fact outcomes.
 
     Outcomes are per independent encounter/fact, never per neighboring video frame.

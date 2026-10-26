@@ -1,3 +1,5 @@
+import { downloadFile } from "@/lib/download";
+
 type Receipt = { status: string };
 class UploadError extends Error {
   retryable: boolean;
@@ -25,7 +27,7 @@ export async function uploadClip(
           .json()
           .catch(() => ({ detail: "Memory upload failed" }));
         throw new UploadError(
-          error.detail ?? "Memory upload failed",
+          typeof error.detail === "string" ? error.detail : "Memory upload failed",
           [429, 500, 502, 503, 504].includes(response.status),
         );
       }
@@ -44,10 +46,10 @@ export function recordClips(
   onStatus: (text: string) => void,
   onPaused: (paused: boolean) => void,
 ) {
-  let active = true,
-    recorder: MediaRecorder | null = null,
-    timer = 0,
-    pending = Promise.resolve();
+  let active = true;
+  let recorder: MediaRecorder | null = null;
+  let timer = 0;
+  let uploadPromise: Promise<void> | null = null;
   let retained: { metadata: string; clip: Blob } | null = null;
   let finished: Promise<void> = Promise.resolve();
   const mime = ["video/webm;codecs=vp8,opus", "video/webm"].find((type) =>
@@ -57,14 +59,9 @@ export function recordClips(
     throw new Error(
       "This browser cannot record synchronized WebM audio and video.",
     );
-  async function upload() {
-    if (!retained) return;
+  async function sendRetained(clip: { metadata: string; clip: Blob }) {
     try {
-      const receipt = await uploadClip(
-        generation,
-        retained.metadata,
-        retained.clip,
-      );
+      const receipt = await uploadClip(generation, clip.metadata, clip.clip);
       retained = null;
       onPaused(false);
       onStatus(
@@ -80,6 +77,15 @@ export function recordClips(
       );
     }
   }
+  function upload() {
+    if (uploadPromise) return uploadPromise;
+    if (!retained) return Promise.resolve();
+    uploadPromise = sendRetained(retained).finally(() => {
+      uploadPromise = null;
+    });
+    return uploadPromise;
+  }
+
   function begin() {
     if (!active || retained) return;
     const chunks: Blob[] = [];
@@ -113,7 +119,7 @@ export function recordClips(
             }),
           );
           retained = { metadata, clip };
-          pending = upload();
+          void upload();
         } else if (active) begin();
         resolve();
       };
@@ -125,26 +131,27 @@ export function recordClips(
   }
   begin();
   return {
-    retry: async () => {
-      await pending;
-      pending = upload();
-      await pending;
-    },
+    retry: upload,
     download: () => {
       if (!retained) return;
-      const url = URL.createObjectURL(retained.clip),
-        link = document.createElement("a");
-      link.href = url;
-      link.download = "remind-unsaved-conversation.webm";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (uploadPromise) {
+        onStatus(
+          "The conversation upload is in progress. Wait for it to finish before downloading.",
+        );
+        return;
+      }
+      downloadFile(retained.clip, "remind-unsaved-conversation.webm");
+      retained = null;
+      onPaused(false);
+      onStatus("Conversation downloaded. This clip has not been added to memory.");
+      if (active) begin();
     },
     stop: async () => {
       active = false;
       clearTimeout(timer);
       if (recorder && recorder.state !== "inactive") recorder.stop();
       await finished;
-      await pending;
+      await uploadPromise;
     },
   };
 }

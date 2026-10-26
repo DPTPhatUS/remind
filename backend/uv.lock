@@ -1228,15 +1228,10 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "av" },
     { name = "fastapi" },
-    { name = "httpx" },
-    { name = "mypy" },
     { name = "numpy" },
     { name = "openai" },
     { name = "opencv-python-headless" },
     { name = "pydantic-settings" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
     { name = "scipy" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webrtcvad-wheels" },
@@ -1251,20 +1246,24 @@ speaker = [
     { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "av", specifier = ">=19.0.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mypy", specifier = ">=1.11.0" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "openai", specifier = ">=1.50.0" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
     { name = "pydantic-settings", specifier = ">=2.4.0" },
-    { name = "pytest", specifier = ">=8.3.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23.0" },
-    { name = "ruff", specifier = ">=0.6.0" },
     { name = "scipy", specifier = ">=1.18.1" },
     { name = "speechbrain", marker = "extra == 'speaker'", specifier = "==1.1.2" },
     { name = "torch", marker = "extra == 'speaker'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cpu" },
@@ -1273,6 +1272,15 @@ requires-dist = [
     { name = "webrtcvad-wheels", specifier = ">=2.0.14" },
 ]
 provides-extras = ["speaker"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "mypy", specifier = ">=1.11.0" },
+    { name = "pytest", specifier = ">=8.3.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+    { name = "ruff", specifier = ">=0.6.0" },
+]
 
 [[package]]
 name = "requests"

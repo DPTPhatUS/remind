@@ -37,7 +37,7 @@ def test_retained_final_clip_can_retry_after_stop(tmp_path, monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr("remind.app.OpenCVVision", Vision)
+    monkeypatch.setattr("remind.runtime.OpenCVVision", Vision)
     with TestClient(create_app(Settings(data_dir=tmp_path, openai_api_key="test"))) as client:
         generation = client.post("/api/session").json()["generation"]
         with client.websocket_connect(
@@ -55,6 +55,14 @@ def test_retained_final_clip_can_retry_after_stop(tmp_path, monkeypatch):
                 socket.send_bytes(struct.pack(">I", len(header)) + header + b"jpeg")
                 socket.receive_json()
         client.post(f"/api/session/{generation}/stop")
+        empty = client.post(
+            f"/api/live/{generation}/clips",
+            params={"metadata": json.dumps({"window_id": "last", "start_ms": 0, "end_ms": 2100})},
+            content=b"",
+        )
+        assert empty.status_code == 422
+        assert empty.json()["detail"] == "Clip is empty"
+        assert list((tmp_path / "spool").iterdir()) == []
         response = client.post(
             f"/api/live/{generation}/clips",
             params={"metadata": json.dumps({"window_id": "last", "start_ms": 0, "end_ms": 2100})},
@@ -62,6 +70,21 @@ def test_retained_final_clip_can_retry_after_stop(tmp_path, monkeypatch):
         )
         assert response.status_code == 200
         assert response.json()["status"] == "queued"
+
+
+def test_only_one_live_session_and_stale_generation_cannot_upload(tmp_path, monkeypatch):
+    class Vision:
+        def __init__(self, *args):
+            pass
+
+    monkeypatch.setattr("remind.runtime.OpenCVVision", Vision)
+    with TestClient(create_app(Settings(data_dir=tmp_path, openai_api_key="test"))) as client:
+        first = client.post("/api/session").json()["generation"]
+        assert client.post("/api/session").status_code == 409
+        assert client.post(f"/api/session/{first}/stop").status_code == 200
+        second = client.post("/api/session").json()["generation"]
+        assert first != second
+        assert client.post(f"/api/live/{first}/clips", content=b"stale").status_code == 409
 
 
 def test_helper_voice_enrollment_replacement_and_removal(tmp_path, monkeypatch):
@@ -78,7 +101,7 @@ def test_helper_voice_enrollment_replacement_and_removal(tmp_path, monkeypatch):
             return {"model": "fixture-voice", "embeddings": [[1.0, 0.0]] * 3}
 
     monkeypatch.setattr(
-        "remind.audio.media.decode_audio",
+        "remind.app.decode_audio",
         lambda *args, **kwargs: {"pcm": np.ones(48000, dtype=np.int16), "continuous": True},
     )
     with TestClient(
@@ -110,6 +133,9 @@ def test_failed_voice_replacement_preserves_existing_reference(tmp_path, monkeyp
     class Verifier:
         fail = False
 
+        def readiness(self):
+            return {"available": True, "error": None}
+
         def enroll(self, samples):
             if self.fail:
                 raise ValueError("Samples contain different speakers")
@@ -117,7 +143,7 @@ def test_failed_voice_replacement_preserves_existing_reference(tmp_path, monkeyp
 
     verifier = Verifier()
     monkeypatch.setattr(
-        "remind.audio.media.decode_audio",
+        "remind.app.decode_audio",
         lambda *args, **kwargs: {"pcm": np.ones(48000, dtype=np.int16), "continuous": True},
     )
     with TestClient(

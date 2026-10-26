@@ -43,7 +43,6 @@ and flushes the final clip. Keep the backend on localhost.
   establish personal facts. Anonymous transcription labels are local to each clip.
 - Multiple faces or an uncertain face suspend profile learning. Changing visitors
   starts a separate encounter. Delayed clips retain their capture-time identity.
-  Mouth analysis and Light-ASD are not used.
 - OpenAI provides English speaker-labelled transcription, contextual fact
   extraction, and a separate evidence-verification pass. Recent dialogue spans
   clip boundaries. Questions alone do not establish their premises: facts require
@@ -84,15 +83,30 @@ off-screen voice can be mistaken for the visitor. Voice and face operating point
 are uncalibrated defaults, not probabilities. Automated fixtures and public-audio
 model smokes do not establish real-world recognition or personal-fact accuracy.
 
-The schema is rewritten in place, with no migration or older-version support.
-Development data from the previous schema must be reset once before running this
-rewrite. Normal restarts preserve all newly learned data. Startup never
-intentionally wipes current memories.
+Normal restarts preserve learned memories. The current SQLite schema is created
+on first startup; there is no migration or older-version support.
 
-Provider models remain configurable. The existing defaults require a separate
-migration before the published GPT-4.1 mini (January 14, 2027) and
-gpt-4o-transcribe-diarize (February 26, 2027) shutdowns. Changing transcription
-models must preserve speaker labels and timestamps; it is not just a model-ID swap.
+Provider model IDs are configurable in `backend/.env`. A transcription provider
+must return speaker labels and timestamps; changing providers may require an
+adapter rather than only changing the model ID.
+
+## Code layout
+
+| Location | Responsibility |
+| --- | --- |
+| `backend/src/remind/app.py` | HTTP routes, request validation, and local access guards |
+| `backend/src/remind/runtime.py` | Startup, shutdown, models, and background tasks |
+| `backend/src/remind/live/` | Camera transport, face tracking, and encounter association |
+| `backend/src/remind/vision/` | Face detection, recognition, and model installation |
+| `backend/src/remind/audio/` | Audio decoding, user-voice verification, and cloud providers |
+| `backend/src/remind/memory/` | Evidence validation, consolidation, and durable jobs |
+| `backend/src/remind/database.py` | Current SQLite schema and transactions |
+| `frontend/src/features/` | Browser capture, setup, and profile interaction logic |
+| `frontend/src/pages/` | Live view, voice setup, and People screens |
+| `benchmarks/` | Recorded-media evaluation instructions and example manifest |
+
+Development checks are installed by default by `uv sync`.
+Use `uv sync --no-dev --extra speaker` when only runtime dependencies are needed.
 
 ## Verify
 
@@ -109,6 +123,8 @@ cd frontend
 npm test
 npm run build
 npm run lint
+# Browser fixture setup is described in benchmarks/README.md.
+npm run test:e2e
 ```
 
 See [the API contract](backend/docs/API.md),

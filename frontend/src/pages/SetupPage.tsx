@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { VoiceStatus } from "@/lib/api-types";
+import {
+  useVoiceSamples,
+  VOICE_SAMPLE_COUNT,
+} from "@/features/voice/useVoiceSamples";
 
-type Sample = { audio: Blob; url: string };
-const SAMPLE_COUNT = 3;
-const SAMPLE_SECONDS = 8;
 const prompts = [
   "Talk about your morning and the things you enjoy doing.",
   "Describe a familiar place or a happy memory.",
@@ -23,27 +24,14 @@ async function audioBase64(blob: Blob): Promise<string> {
 
 export function SetupPage() {
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
-  const [samples, setSamples] = useState<(Sample | null)[]>([null, null, null]);
-  const [recording, setRecording] = useState<number | null>(null);
-  const [seconds, setSeconds] = useState(SAMPLE_SECONDS);
+  const voiceSamples = useVoiceSamples();
+  const { samples, recording, waitingForMicrophone, seconds } = voiceSamples;
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const referenceSaved = Boolean(voice?.reference_saved || voice?.ready);
+  const referenceSaved = voice?.reference_saved ?? false;
   const generation = useRef(0);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const stream = useRef<MediaStream | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const urls = useRef(new Set<string>());
-  const stopMedia = () => {
-    if (timer.current) clearInterval(timer.current);
-    timer.current = null;
-    if (recorder.current?.state === "recording") recorder.current.stop();
-    recorder.current = null;
-    stream.current?.getTracks().forEach((track) => track.stop());
-    stream.current = null;
-  };
   useEffect(() => {
     const token = ++generation.current;
     api<VoiceStatus>("/user/voice")
@@ -56,118 +44,42 @@ export function SetupPage() {
       .finally(() => {
         if (token === generation.current) setLoading(false);
       });
-    const currentUrls = urls.current;
     const lifecycle = generation;
     return () => {
       lifecycle.current++;
-      stopMedia();
-      currentUrls.forEach((url) => URL.revokeObjectURL(url));
-      currentUrls.clear();
     };
   }, []);
 
-  async function record(index: number) {
-    const token = ++generation.current;
+  function record(index: number) {
     setError("");
     setNotice("");
-    setRecording(index);
-    setSeconds(SAMPLE_SECONDS);
-    try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-        video: false,
-      });
-      if (token !== generation.current) {
-        media.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      stream.current = media;
-      const mimeType = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4",
-      ].find((type) => MediaRecorder.isTypeSupported(type));
-      if (!mimeType)
-        throw new Error(
-          "This browser cannot record audio. Try a recent Chrome or Firefox browser.",
-        );
-      const current = new MediaRecorder(media, { mimeType });
-      recorder.current = current;
-      const chunks: Blob[] = [];
-      current.ondataavailable = (event) => {
-        if (event.data.size) chunks.push(event.data);
-      };
-      current.onerror = () => {
-        if (token !== generation.current) return;
-        generation.current++;
-        stopMedia();
-        setRecording(null);
-        setError("The recording failed. Please try that sample again.");
-      };
-      current.onstop = () => {
-        if (token !== generation.current) return;
-        stopMedia();
-        setRecording(null);
-        const audio = new Blob(chunks, { type: mimeType });
-        if (!audio.size) {
-          setError(
-            "No audio was captured. Check the microphone and try again.",
-          );
-          return;
-        }
-        const url = URL.createObjectURL(audio);
-        urls.current.add(url);
-        setSamples((previous) => {
-          const old = previous[index];
-          if (old) {
-            URL.revokeObjectURL(old.url);
-            urls.current.delete(old.url);
-          }
-          return previous.map((sample, i) =>
-            i === index ? { audio, url } : sample,
-          );
-        });
-      };
-      current.start();
-      let remaining = SAMPLE_SECONDS;
-      timer.current = setInterval(() => {
-        remaining--;
-        setSeconds(remaining);
-        if (remaining <= 0 && current.state === "recording") current.stop();
-      }, 1000);
-    } catch (e) {
-      if (token !== generation.current) return;
-      stopMedia();
-      setRecording(null);
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    void voiceSamples.record(index);
   }
 
   function cancel() {
-    generation.current++;
-    stopMedia();
-    setRecording(null);
+    voiceSamples.cancel();
     setNotice("Recording cancelled. You can try again when ready.");
   }
 
   async function submit() {
+    const completeSamples = samples.filter((sample) => sample !== null);
+    if (completeSamples.length !== VOICE_SAMPLE_COUNT) return;
     const token = ++generation.current;
     setBusy(true);
     setError("");
     setNotice("");
     try {
       const encoded = await Promise.all(
-        samples.map((sample) => audioBase64(sample!.audio)),
+        completeSamples.map((sample) => audioBase64(sample.audio)),
       );
+      if (token !== generation.current) return;
       const status = await api<VoiceStatus>("/user/voice", {
         method: "POST",
         body: JSON.stringify({ samples: encoded }),
       });
       if (token !== generation.current) return;
       setVoice(status);
-      urls.current.forEach((url) => URL.revokeObjectURL(url));
-      urls.current.clear();
-      setSamples([null, null, null]);
+      voiceSamples.clear();
       setNotice(
         "Voice setup saved. Remind can now learn about visitors automatically.",
       );
@@ -205,6 +117,11 @@ export function SetupPage() {
     }
   }
 
+  let voiceStatus = "User’s voice has not been set up";
+  if (loading) voiceStatus = "Checking saved voice…";
+  else if (voice?.ready) voiceStatus = "User’s voice is ready";
+  else if (referenceSaved) voiceStatus = "Saved voice is temporarily unavailable";
+
   return (
     <main className="content setup-page">
       <div className="page-heading">
@@ -215,9 +132,9 @@ export function SetupPage() {
           the person in front automatically.
         </p>
       </div>
-      {error && (
+      {(error || voiceSamples.error) && (
         <p role="alert" className="error">
-          {error}
+          {error || voiceSamples.error}
         </p>
       )}
       {notice && (
@@ -228,19 +145,18 @@ export function SetupPage() {
       <section className="setup-status" aria-label="Saved voice status">
         <span className={`status-dot ${voice?.ready ? "active" : ""}`} />
         <div>
-          <strong>
-            {loading
-              ? "Checking saved voice…"
-              : voice?.ready
-                ? "User’s voice is ready"
-                : referenceSaved
-                  ? "Saved voice is temporarily unavailable"
-                  : "User’s voice has not been set up"}
-          </strong>
+          <strong>{voiceStatus}</strong>
           <p>
-            {referenceSaved && voice
-              ? `${voice.sample_count} samples saved${voice.updated_at ? ` · ${new Date(voice.updated_at).toLocaleDateString()}` : ""}. Record three new samples below to replace them.`
-              : "Face recognition and conversation summaries work without a saved voice. Learning personal facts starts after setup."}
+            {referenceSaved && voice ? (
+              <>
+                {voice.sample_count} samples saved
+                {voice.updated_at && ` · ${new Date(voice.updated_at).toLocaleDateString()}`}.
+                Record three new samples below to replace them.
+              </>
+            ) : (
+              <>Face recognition and conversation summaries work without a saved
+                voice. Learning personal facts starts after setup.</>
+            )}
           </p>
         </div>
       </section>
@@ -275,7 +191,9 @@ export function SetupPage() {
               {recording === index ? (
                 <div>
                   <p role="status" className="recording-status">
-                    Recording… {seconds} seconds left
+                    {waitingForMicrophone
+                      ? "Waiting for microphone permission…"
+                      : `Recording… ${seconds} seconds left`}
                   </p>
                   <button className="secondary" onClick={cancel}>
                     Cancel recording
@@ -290,7 +208,7 @@ export function SetupPage() {
                     loading ||
                     voice?.model_available === false
                   }
-                  onClick={() => void record(index)}
+                  onClick={() => record(index)}
                 >
                   {samples[index]
                     ? `Retake sample ${index + 1}`
@@ -306,7 +224,7 @@ export function SetupPage() {
               loading ||
               busy ||
               recording !== null ||
-              samples.filter(Boolean).length !== SAMPLE_COUNT ||
+              samples.filter(Boolean).length !== VOICE_SAMPLE_COUNT ||
               voice?.model_available === false
             }
             onClick={() => void submit()}

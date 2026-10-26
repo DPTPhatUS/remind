@@ -26,6 +26,9 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
   const now = "2026-10-26T12:00:00Z";
   let voice: VoiceStatus = {
     ready: false,
+    reference_saved: false,
+    model_available: true,
+    error: null,
     version: 0,
     model: null,
     sample_count: 0,
@@ -83,6 +86,9 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
         samplesReceived = body.samples.length;
         voice = {
           ready: true,
+          reference_saved: true,
+          model_available: true,
+          error: null,
           version: voice.version + 1,
           model: "fixture-ecapa",
           sample_count: 3,
@@ -91,6 +97,9 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
       } else if (method === "DELETE")
         voice = {
           ready: false,
+          reference_saved: false,
+          model_available: true,
+          error: null,
           version: voice.version + 1,
           model: null,
           sample_count: 0,

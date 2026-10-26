@@ -5,12 +5,14 @@ export function captureFrames(
   generation: string,
 ) {
   const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d", { alpha: false })!;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) throw new Error("This browser cannot prepare camera frames.");
+  canvas.width = 640;
   let running = true,
     encoding = false,
     sequence = 0,
     handle = 0;
-  function tick() {
+  const tick = () => {
     if (!running) return;
     handle = video.requestVideoFrameCallback(tick);
     if (
@@ -22,8 +24,8 @@ export function captureFrames(
       return;
     encoding = true;
     const capture_ms = performance.now();
-    canvas.width = 640;
-    canvas.height = Math.round((640 * video.videoHeight) / video.videoWidth);
+    const height = Math.round((640 * video.videoHeight) / video.videoWidth);
+    if (canvas.height !== height) canvas.height = height;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(
       async (blob) => {
@@ -54,7 +56,7 @@ export function captureFrames(
       "image/jpeg",
       0.85,
     );
-  }
+  };
   if ("requestVideoFrameCallback" in video)
     handle = video.requestVideoFrameCallback(tick);
   else

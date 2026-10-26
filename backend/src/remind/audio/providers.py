@@ -1,10 +1,14 @@
 """Cloud speech/text boundary; speaker identity and storage remain local."""
 
 import json
+from collections.abc import Iterable, Sequence
+from typing import Any, cast
 
 from openai import AsyncOpenAI
+from openai.types.audio import TranscriptionDiarized
 
-from remind.audio.media import wav_bytes
+from remind.audio.media import PCM, wav_bytes
+from remind.config import Settings
 from remind.memory.extraction import ExtractionResult, VerificationResult
 
 EXTRACTION_INSTRUCTIONS = """Extract supported conversational memories for a one-on-one encounter.
@@ -67,62 +71,84 @@ Manual facts cannot be overwritten. When uncertain set supported=false with a sh
 
 
 class Providers:
-    def __init__(self, settings):
+    def __init__(self, settings: Settings):
         self.settings = settings
         self.client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=30, max_retries=0)
 
-    async def transcribe(self, pcm):
+    async def transcribe(self, pcm: PCM) -> list[dict[str, Any]]:
         result = await self.client.audio.transcriptions.create(
             model=self.settings.openai_transcribe_model,
             file=("conversation.wav", wav_bytes(pcm), "audio/wav"),
             response_format="diarized_json",
+            stream=False,
             language="en",
             chunking_strategy="auto",
         )
-        data = result.model_dump()
-        return [
-            {
-                "id": str(s.get("id", i)),
-                "speaker": str(s.get("speaker", "unknown")),
-                "text": s["text"],
-                "start_ms": float(s["start"]) * 1000,
-                "end_ms": float(s["end"]) * 1000,
-            }
-            for i, s in enumerate(data.get("segments", []))
-        ]
+        # The SDK overload does not narrow non-streaming diarized responses.
+        data = cast(TranscriptionDiarized, result).model_dump()
+        segments = []
+        for index, source in enumerate(data.get("segments", [])):
+            speaker = source.get("speaker")
+            segments.append(
+                {
+                    "id": str(source.get("id", index)),
+                    "speaker": speaker if isinstance(speaker, str) else "unknown",
+                    "text": source["text"],
+                    "start_ms": float(source["start"]) * 1000,
+                    "end_ms": float(source["end"]) * 1000,
+                }
+            )
+        return segments
 
-    async def extract(self, segments, previous_summary="", existing_facts=(), encounter_time="",
-                      current_ids=()):
+    async def extract(
+        self,
+        segments: Sequence[dict[str, Any]],
+        previous_summary: str = "",
+        existing_facts: Iterable[dict[str, Any]] = (),
+        encounter_time: str = "",
+        current_ids: Iterable[str] = (),
+    ) -> dict[str, Any]:
         response = await self.client.responses.parse(
             model=self.settings.openai_text_model,
             instructions=EXTRACTION_INSTRUCTIONS,
-            input=json.dumps({
-                "segments": segments,
-                "current_segment_ids": list(current_ids),
-                "previous_summary": previous_summary,
-                "existing_facts": list(existing_facts),
-                "encounter_time": encounter_time,
-            }),
+            input=json.dumps(
+                {
+                    "segments": segments,
+                    "current_segment_ids": list(current_ids),
+                    "previous_summary": previous_summary,
+                    "existing_facts": list(existing_facts),
+                    "encounter_time": encounter_time,
+                }
+            ),
             text_format=ExtractionResult,
         )
         if response.output_parsed is None:
             raise ValueError("Extraction returned no valid structured result")
         return response.output_parsed.model_dump()
 
-    async def verify(self, facts, segments, existing_facts=()):
+    async def verify(
+        self,
+        facts: Sequence[dict[str, Any]],
+        segments: Sequence[dict[str, Any]],
+        existing_facts: Iterable[dict[str, Any]] = (),
+    ) -> dict[str, Any]:
         if not facts:
             return {"assessments": []}
         response = await self.client.responses.parse(
             model=self.settings.openai_text_model,
             instructions=VERIFICATION_INSTRUCTIONS,
-            input=json.dumps({
-                "facts": facts, "segments": segments, "existing_facts": list(existing_facts),
-            }),
+            input=json.dumps(
+                {
+                    "facts": facts,
+                    "segments": segments,
+                    "existing_facts": list(existing_facts),
+                }
+            ),
             text_format=VerificationResult,
         )
         if response.output_parsed is None:
             raise ValueError("Verification returned no valid structured result")
         return response.output_parsed.model_dump()
 
-    async def close(self):
+    async def close(self) -> None:
         await self.client.close()

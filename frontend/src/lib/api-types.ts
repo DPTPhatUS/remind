@@ -67,7 +67,7 @@ export type PersonMemory = Person & {
 export type FaceTrack = {
   track_id: string;
   person_id: string | null;
-  box: number[];
+  box: [number, number, number, number];
   state: string;
   memory: PersonMemory | null;
 };

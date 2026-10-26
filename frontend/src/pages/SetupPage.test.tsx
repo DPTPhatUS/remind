@@ -7,16 +7,23 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SetupPage } from "./SetupPage";
+import type { VoiceStatus } from "@/lib/api-types";
 
-const noVoice = {
+const noVoice: VoiceStatus = {
   ready: false,
+  reference_saved: false,
+  model_available: true,
+  error: null,
   version: 0,
   model: null,
   sample_count: 0,
   updated_at: null,
 };
-const savedVoice = {
+const savedVoice: VoiceStatus = {
   ready: true,
+  reference_saved: true,
+  model_available: true,
+  error: null,
   version: 1,
   model: "ecapa-test",
   sample_count: 3,
@@ -117,6 +124,7 @@ it("records three samples, submits raw base64, and removes the saved voice", asy
 });
 
 it("stops a late microphone response when the helper leaves setup", async () => {
+  recorders();
   let finish: (stream: unknown) => void = () => {};
   const stopTrack = vi.fn();
   vi.stubGlobal("navigator", {
@@ -144,6 +152,7 @@ it("stops a late microphone response when the helper leaves setup", async () => 
 });
 
 it("keeps setup usable after microphone permission is denied", async () => {
+  recorders();
   vi.stubGlobal("navigator", {
     mediaDevices: {
       getUserMedia: vi

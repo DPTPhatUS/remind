@@ -139,7 +139,6 @@ it("saves and removes an individual fact using the current profile version", asy
     within(details).getByRole("button", { name: "Save fact correction" }),
   );
   const corrected = await screen.findByText("Cooking", { exact: true });
-  fireEvent.click(corrected);
   fireEvent.click(
     within(corrected.closest("details")!).getByRole("button", {
       name: "Remove fact",

@@ -4,18 +4,15 @@ import numpy as np
 import pytest
 
 from remind.config import Settings
-from remind.database import Database
+from remind.database import Database, rows
 from remind.live.session import LiveSession
-from remind.memory.store import MemoryStore, rows
-from remind.memory.worker import MemoryWorker, visitor_supported
-
-
-class Vad:
-    def accept(self, *args):
-        return [True]
-
-    def flush(self):
-        return None
+from remind.memory.store import MemoryStore
+from remind.memory.worker import (
+    MemoryWorker,
+    bounded_dialogue,
+    transcript_segments,
+    visitor_supported,
+)
 
 
 class Verifier:
@@ -36,7 +33,12 @@ class Provider:
         return self.segments
 
     async def extract(
-        self, dialogue, previous_summary, existing_facts, encounter_time, current_ids,
+        self,
+        dialogue,
+        previous_summary,
+        existing_facts,
+        encounter_time,
+        current_ids,
     ):
         self.received = dialogue
         self.encounter_time = encounter_time
@@ -48,10 +50,12 @@ class Provider:
         return {"summary": "Anna visited and discussed work and gardening.", "facts": claims}
 
     async def verify(self, facts, dialogue, existing_facts):
-        return {"assessments": [
-            {"fact_index": i, "supported": True, "reason": "Fixture semantic verification"}
-            for i in range(len(facts))
-        ]}
+        return {
+            "assessments": [
+                {"fact_index": i, "supported": True, "reason": "Fixture semantic verification"}
+                for i in range(len(facts))
+            ]
+        }
 
     async def close(self):
         pass
@@ -59,9 +63,15 @@ class Provider:
 
 def claim(segment, predicate="name", value="Anna", category="identity", evidence=None):
     return {
-        "subject": "visitor", "category": category, "predicate": predicate, "value": value,
-        "temporal_status": "current", "valid_from": None, "valid_to": None,
-        "operation": "add", "target_fact_id": None,
+        "subject": "visitor",
+        "category": category,
+        "predicate": predicate,
+        "value": value,
+        "temporal_status": "current",
+        "valid_from": None,
+        "valid_to": None,
+        "operation": "add",
+        "target_fact_id": None,
         "evidence": evidence or [{"segment_id": segment["id"], "quote": segment["text"]}],
     }
 
@@ -76,7 +86,7 @@ async def make_store(tmp_path, voice=True):
     await db.create_schema()
     store = MemoryStore(db)
     if voice:
-        await store.set_voice_profile([[1., 0., 0.], [1., 0., 0.]], "fixture-voice")
+        await store.set_voice_profile([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "fixture-voice")
     return settings, db, store
 
 
@@ -85,13 +95,22 @@ async def queue(store, pid, key="intro", start=0, encounter=None, eligible=True)
     await store.add_participant(encounter, pid, "track", start)
     voice = await store.voice_status()
     payload = {
-        "encounter": encounter, "visitor_id": pid,
+        "encounter": encounter,
+        "visitor_id": pid,
         "versions": {pid: (await store.get_person(pid))["version"]},
-        "voice_version": voice["version"], "start_ms": start, "end_ms": start + 2000,
+        "voice_version": voice["version"],
+        "start_ms": start,
+        "end_ms": start + 2000,
         "clip_path": "injected.webm",
         "timeline": [
-            {"ms": stamp, "visitor_id": pid, "eligible": eligible,
-             "face_count": 1, "encounter": encounter, "people": [{"person_id": pid}]}
+            {
+                "ms": stamp,
+                "visitor_id": pid,
+                "eligible": eligible,
+                "face_count": 1,
+                "encounter": encounter,
+                "people": [{"person_id": pid}],
+            }
             for stamp in range(start, start + 2001, 100)
         ],
     }
@@ -100,10 +119,14 @@ async def queue(store, pid, key="intro", start=0, encounter=None, eligible=True)
 
 
 def inject_audio(monkeypatch, continuous=True):
-    monkeypatch.setattr("remind.memory.worker.decode_audio", lambda _: {
-        "pcm": np.ones(32000, dtype=np.int16), "continuous": continuous,
-    })
-    monkeypatch.setattr("remind.memory.worker.AudioWindowBuffer", Vad)
+    monkeypatch.setattr(
+        "remind.memory.worker.decode_audio",
+        lambda _: {
+            "pcm": np.ones(32000, dtype=np.int16),
+            "continuous": continuous,
+        },
+    )
+    monkeypatch.setattr("remind.memory.worker.has_speech", lambda pcm: True)
 
 
 async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkeypatch):
@@ -121,10 +144,17 @@ async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkey
     metric = (await store.processing_metrics())[0]
     assert metric["proposed_facts"] == metric["verified_facts"] == 1
     assert metric["visitor_segments"] == 1
-    assert all(metric[field] >= 0 for field in (
-        "decode_ms", "transcription_ms", "voice_ms", "extraction_ms", "verification_ms",
-        "processing_ms",
-    ))
+    assert all(
+        metric[field] >= 0
+        for field in (
+            "decode_ms",
+            "transcription_ms",
+            "voice_ms",
+            "extraction_ms",
+            "verification_ms",
+            "processing_ms",
+        )
+    )
     assert not await worker.run_once()
     await worker.close()
     await store.close_encounter(payload["encounter"])
@@ -133,8 +163,12 @@ async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkey
     reopened = Database(str(tmp_path / "memory.db"))
     await reopened.create_schema()
     returning = LiveSession("return", MemoryStore(reopened), settings)
-    observation = {"box": [0.3, 0.2, 0.3, 0.4], "embedding": vector,
-                   "quality": True, "thumbnail": b"x"}
+    observation = {
+        "box": [0.3, 0.2, 0.3, 0.4],
+        "embedding": vector,
+        "quality": True,
+        "thumbnail": b"x",
+    }
     for stamp in (0, 100, 200):
         tracks = await returning.observe([observation], stamp)
     memory = tracks[0]["memory"]
@@ -147,7 +181,9 @@ async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkey
 
 @pytest.mark.parametrize("reason", ["no_voice", "multiple_faces", "discontinuous_audio"])
 async def test_unreliable_roles_save_neutral_memory_without_profile_facts(
-    tmp_path, monkeypatch, reason,
+    tmp_path,
+    monkeypatch,
+    reason,
 ):
     settings, db, store = await make_store(tmp_path, voice=reason != "no_voice")
     person = await store.create_person()
@@ -185,10 +221,18 @@ async def test_question_context_survives_clips_with_changing_speaker_labels(tmp_
         assert question["role"] == "user" and answer["role"] == "visitor"
         assert question["speaker"] == answer["speaker"] == "A"  # labels have no global identity
         assert question["id"] != answer["id"]
-        return [claim(answer, "workplace", "primary school", "work", evidence=[
-            {"segment_id": question["id"], "quote": question["text"]},
-            {"segment_id": answer["id"], "quote": answer["text"]},
-        ])]
+        return [
+            claim(
+                answer,
+                "workplace",
+                "primary school",
+                "work",
+                evidence=[
+                    {"segment_id": question["id"], "quote": question["text"]},
+                    {"segment_id": answer["id"], "quote": answer["text"]},
+                ],
+            )
+        ]
 
     worker.providers = Provider(transcript("At the primary school.", "A"), contextual)
     await worker.run_once()
@@ -222,10 +266,18 @@ async def test_late_old_clip_cannot_use_future_utterance_as_confirmation(tmp_pat
         questions = [s for s in dialogue if s["text"] == "Do you live in Da Nang?"]
         if not questions:
             return []
-        return [claim(current[0], "residence", "Da Nang", "residence", evidence=[
-            {"segment_id": questions[0]["id"], "quote": questions[0]["text"]},
-            {"segment_id": current[0]["id"], "quote": current[0]["text"]},
-        ])]
+        return [
+            claim(
+                current[0],
+                "residence",
+                "Da Nang",
+                "residence",
+                evidence=[
+                    {"segment_id": questions[0]["id"], "quote": questions[0]["text"]},
+                    {"segment_id": current[0]["id"], "quote": current[0]["text"]},
+                ],
+            )
+        ]
 
     worker.verifier = Verifier()
     provider = Provider(transcript("Yes."), contextual)
@@ -251,7 +303,7 @@ async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monk
         elif action == "correct":
             await store.correct_person(person["id"], {"name": "Grace"}, person["version"])
         else:
-            await store.set_voice_profile([[0., 1., 0.]], "replacement")
+            await store.set_voice_profile([[0.0, 1.0, 0.0]], "replacement")
 
     worker = MemoryWorker(store, settings, None, verifier=Verifier())
     worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])], mutation)
@@ -270,8 +322,9 @@ async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monk
 
 def test_capture_time_presence_gating_requires_complete_fresh_single_visitor():
     segment = {"start_ms": 200, "end_ms": 900}
-    timeline = [{"ms": ms, "eligible": True, "visitor_id": "anna"}
-                for ms in (0, 200, 400, 600, 800)]
+    timeline = [
+        {"ms": ms, "eligible": True, "visitor_id": "anna"} for ms in (0, 200, 400, 600, 800)
+    ]
     assert visitor_supported(segment, timeline, 0, "anna")
     assert not visitor_supported(segment, timeline, 0, "bob")
     assert not visitor_supported(segment, timeline[:1], 0, "anna")
@@ -311,8 +364,10 @@ async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path,
     person = await store.create_person()
     _, payload = await queue(store, person["id"])
     async with db.transaction() as conn:
-        await conn.execute("UPDATE encounters SET started_at=? WHERE id=?",
-                           ("2026-10-26T19:00:00+00:00", payload["encounter"]))
+        await conn.execute(
+            "UPDATE encounters SET started_at=? WHERE id=?",
+            ("2026-10-26T19:00:00+00:00", payload["encounter"]),
+        )
     inject_audio(monkeypatch)
     worker = MemoryWorker(store, settings, None, verifier=Verifier())
     provider = Provider(transcript("I will visit tomorrow."))
@@ -321,3 +376,111 @@ async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path,
     assert provider.encounter_time == "2026-10-27T02:00:00+07:00"
     await worker.close()
     await db.close()
+
+
+async def test_silence_finishes_without_sending_audio_to_provider(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    job_id, payload = await queue(store, person["id"])
+    inject_audio(monkeypatch)
+    monkeypatch.setattr("remind.memory.worker.has_speech", lambda pcm: False)
+
+    class UnusedProvider(Provider):
+        async def transcribe(self, pcm):
+            pytest.fail("Silent audio must stay local")
+
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    worker.providers = UnusedProvider([])
+    try:
+        assert await worker.run_once()
+        assert await store.pending_jobs() == []
+        assert await store.recent_context(payload["encounter"]) == []
+        assert await store.facts_for_person(person["id"]) == []
+        metrics = await store.processing_metrics()
+        assert metrics[0]["job_id"] == job_id
+        assert "transcription_ms" not in metrics[0]
+    finally:
+        await worker.close()
+        await db.close()
+
+
+async def test_unavailable_voice_model_keeps_summary_without_learning_facts(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, payload = await queue(store, person["id"])
+    inject_audio(monkeypatch)
+
+    class UnavailableVerifier:
+        def classify(self, pcm, segments, profile):
+            raise RuntimeError("Model unavailable")
+
+    worker = MemoryWorker(store, settings, None, verifier=UnavailableVerifier())
+    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
+    try:
+        assert await worker.run_once()
+        assert await store.pending_jobs() == []
+        assert await store.facts_for_person(person["id"]) == []
+        assert (await store.recent_context(payload["encounter"]))[0]["role"] == "uncertain"
+        assert (await store.get_encounter(payload["encounter"]))["summary"]
+        assert "unavailable" in worker.speaker_status
+    finally:
+        await worker.close()
+        await db.close()
+
+
+async def test_forgetting_removes_recordings_and_retries_filesystem_failures(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, payload = await queue(store, person["id"])
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    recording = spool / "forgotten.webm"
+    recording.write_bytes(b"private recording")
+    async with db.transaction() as connection:
+        await connection.execute(
+            "UPDATE jobs SET payload=json_set(payload,'$.clip_path',?) WHERE encounter_id=?",
+            (str(recording), payload["encounter"]),
+        )
+    await store.forget_person(person["id"])
+    worker = MemoryWorker(store, settings, None, verifier=Verifier())
+    original_unlink = type(recording).unlink
+
+    def fail_unlink(path, *args, **kwargs):
+        if path == recording:
+            raise PermissionError("Temporary file lock")
+        return original_unlink(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(type(recording), "unlink", fail_unlink)
+            await worker.cleanup()
+        assert recording.exists()
+        assert await store.pending_cleanup() == [str(recording)]
+        await worker.cleanup()
+        assert not recording.exists()
+        assert await store.pending_cleanup() == []
+    finally:
+        await worker.close()
+        await db.close()
+
+
+def test_transcription_tolerance_cannot_create_turns_past_the_recording_end():
+    turns = [
+        {"id": "normal", "start_ms": 0, "end_ms": 900, "text": "Hello"},
+        {"id": "tail", "start_ms": 900, "end_ms": 1030, "text": "Goodbye"},
+        {"id": "outside", "start_ms": 1010, "end_ms": 1040, "text": "Invalid"},
+        {"id": "negative", "start_ms": -10, "end_ms": 100, "text": "Invalid"},
+        {"id": "nan", "start_ms": float("nan"), "end_ms": 100, "text": "Invalid"},
+    ]
+    saved = transcript_segments(turns, "clip", duration_ms=1000)
+    assert [turn["text"] for turn in saved] == ["Hello", "Goodbye"]
+    assert saved[1]["end_ms"] == 1000
+    assert len({turn["id"] for turn in saved}) == 2
+
+
+def test_dialogue_budget_does_not_join_answers_to_questions_across_a_removed_turn():
+    question = {"id": "old", "text": "Do you live in Da Nang?"}
+    long_turn = {"id": "middle", "text": "x" * 25000}
+    answer = {"id": "new", "text": "Yes."}
+    assert bounded_dialogue([question, long_turn, answer]) == [answer]
+    assert bounded_dialogue([long_turn]) == []

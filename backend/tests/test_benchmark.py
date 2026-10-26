@@ -1,4 +1,9 @@
-from remind.benchmark.metrics import summarize
+import json
+
+import pytest
+
+from remind.benchmark.metrics import evaluate_trace, percentiles, summarize
+from remind.benchmark.report import write_report
 
 
 def test_duplicate_frames_and_empty_runs_cannot_pass():
@@ -19,10 +24,6 @@ def test_eligible_ten_second_windows_have_explicit_denominators():
 
 
 def test_trace_metrics_require_labels_and_consistent_clocks():
-    import pytest
-
-    from remind.benchmark.metrics import evaluate_trace
-
     assert evaluate_trace({"frames": []})["acceptance_complete"] is False
     trace = {
         "frames": [
@@ -57,8 +58,6 @@ def test_trace_metrics_require_labels_and_consistent_clocks():
 
 
 def test_trace_coverage_cannot_pass_by_abstaining():
-    from remind.benchmark.metrics import evaluate_trace
-
     report = evaluate_trace(
         {
             "frames": [],
@@ -70,3 +69,17 @@ def test_trace_coverage_cannot_pass_by_abstaining():
     assert report["fact_coverage"]["rate"] == 0
     assert report["recognition_coverage"]["rate"] == 0
     assert report["acceptance_complete"] is False
+
+
+@pytest.mark.parametrize("latency", [-1, float("nan"), float("inf")])
+def test_latency_reports_reject_invalid_measurements(latency):
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        percentiles([latency])
+
+
+def test_writing_report_preserves_original_result_and_separates_events(tmp_path):
+    result = {"mode": "realtime", "events": [{"sequence": 1, "processing_ms": 10}]}
+    write_report(result, tmp_path)
+    assert result["events"] == [{"sequence": 1, "processing_ms": 10}]
+    assert json.loads((tmp_path / "report.json").read_text()) == {"mode": "realtime"}
+    assert json.loads((tmp_path / "events.jsonl").read_text()) == result["events"][0]

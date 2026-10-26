@@ -2,145 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import type { Fact, PersonMemory } from "@/lib/api-types";
-
-const groups = [
-  {
-    title: "Background",
-    categories: [
-      "identity",
-      "relationship",
-      "age",
-      "work",
-      "education",
-      "residence",
-      "other",
-    ],
-  },
-  {
-    title: "Interests and routines",
-    categories: ["interests", "preferences", "routines"],
-  },
-  { title: "Related people", categories: ["family"] },
-  { title: "Experiences and plans", categories: ["experiences", "plans"] },
-];
-const factLabel = (fact: Fact) => fact.predicate.replaceAll("_", " ");
-const subjectLabel = (subject: string) =>
-  subject.replaceAll("_", " ").replace(/^related[:/]/, "");
-const dateLabel = (value: string) => {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
-};
-
-function FactCard({
-  fact,
-  busy,
-  onEdit,
-  onRemove,
-}: {
-  fact: Fact;
-  busy: boolean;
-  onEdit: (value: string) => Promise<void>;
-  onRemove: () => Promise<void>;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(fact.value);
-  async function save(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    try {
-      await onEdit(value.trim());
-      setEditing(false);
-    } catch {
-      /* The parent displays the error and keeps this form open. */
-    }
-  }
-  return (
-    <details className="fact">
-      <summary>
-        <span className="fact-label">
-          {fact.subject !== "visitor" && `${subjectLabel(fact.subject)} · `}
-          {factLabel(fact)}
-        </span>
-        <span className="fact-value">{fact.value}</span>
-        {fact.temporal_status !== "current" && (
-          <span className="fact-badge">
-            {fact.temporal_status === "planned" ? "Planned" : "Past"}
-          </span>
-        )}
-        {fact.manual && <span className="fact-badge">Corrected</span>}
-      </summary>
-      {(fact.valid_from || fact.valid_to) && (
-        <p className="muted">
-          {fact.valid_from && `From ${dateLabel(fact.valid_from)}`}
-          {fact.valid_from && fact.valid_to && " · "}
-          {fact.valid_to && `Until ${dateLabel(fact.valid_to)}`}
-        </p>
-      )}
-      <div className="fact-evidence">
-        <strong>Supporting conversation</strong>
-        {fact.evidence.length ? (
-          fact.evidence.map((evidence, index) => (
-            <blockquote key={`${evidence.segment_id}-${index}`}>
-              “{evidence.quote}”
-            </blockquote>
-          ))
-        ) : (
-          <p>No conversation quote; this information was added manually.</p>
-        )}
-        <small>Learned {dateLabel(fact.created_at)}</small>
-      </div>
-      {editing ? (
-        <form className="fact-edit" onSubmit={(event) => void save(event)}>
-          <label>
-            Correct {factLabel(fact)}
-            <input
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              maxLength={500}
-              required
-            />
-          </label>
-          <div className="button-row">
-            <button disabled={busy || !value.trim()}>
-              Save fact correction
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => setEditing(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div className="button-row fact-actions">
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() => {
-              setValue(fact.value);
-              setEditing(true);
-            }}
-          >
-            Correct fact
-          </button>
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() => void onRemove()}
-          >
-            Remove fact
-          </button>
-        </div>
-      )}
-    </details>
-  );
-}
+import { ProfileFacts } from "@/features/people/ProfileFacts";
 
 export function PersonDetailPage() {
   const { id } = useParams();
-  return <PersonDetail key={id} id={id!} />;
+  return id ? <PersonDetail key={id} id={id} /> : null;
 }
 
 function PersonDetail({ id }: { id: string }) {
@@ -202,9 +68,9 @@ function PersonDetail({ id }: { id: string }) {
   }
 
   async function changeFact(fact: Fact, value?: string) {
-    if (!person) return;
+    if (!person) return false;
     if (value === undefined && !confirm("Remove this fact from the profile?"))
-      return;
+      return false;
     setBusy(true);
     setError("");
     try {
@@ -216,9 +82,10 @@ function PersonDetail({ id }: { id: string }) {
         }),
       });
       updatePerson(await api<PersonMemory>(`/people/${id}`));
+      return true;
     } catch (e) {
       setError(String(e));
-      throw e;
+      return false;
     } finally {
       setBusy(false);
     }
@@ -241,31 +108,6 @@ function PersonDetail({ id }: { id: string }) {
       setBusy(false);
     }
   }
-  const established =
-    person?.facts.filter(
-      (fact) =>
-        fact.status === "accepted" && fact.temporal_status === "current",
-    ) ?? [];
-  const timeline =
-    person?.facts.filter(
-      (fact) =>
-        fact.status === "accepted" && fact.temporal_status !== "current",
-    ) ?? [];
-  const unresolved =
-    person?.facts.filter((fact) => fact.status === "conflict") ?? [];
-  const history =
-    person?.facts.filter(
-      (fact) => fact.status === "superseded" || fact.status === "dismissed",
-    ) ?? [];
-  const renderFact = (fact: Fact) => (
-    <FactCard
-      key={`${fact.id}-${fact.updated_at}`}
-      fact={fact}
-      busy={busy}
-      onEdit={(value) => changeFact(fact, value)}
-      onRemove={() => changeFact(fact).catch(() => {})}
-    />
-  );
   return (
     <main className="content detail">
       <Link to="/people">← All people</Link>
@@ -287,51 +129,7 @@ function PersonDetail({ id }: { id: string }) {
               ))}
             </ul>
           )}
-          {groups.map((group) => {
-            const facts = established.filter((fact) =>
-              group.title === "Related people"
-                ? fact.subject !== "visitor" ||
-                  group.categories.includes(fact.category)
-                : fact.subject === "visitor" &&
-                  group.categories.includes(fact.category),
-            );
-            return facts.length ? (
-              <section className="profile-section" key={group.title}>
-                <h2>{group.title}</h2>
-                {facts.map(renderFact)}
-              </section>
-            ) : null;
-          })}
-          {!established.length && !timeline.length && (
-            <p className="muted">
-              Personal details will appear here as Remind learns from
-              conversations.
-            </p>
-          )}
-          {timeline.length > 0 && (
-            <section className="profile-section">
-              <h2>Past information and plans</h2>
-              {timeline.map(renderFact)}
-            </section>
-          )}
-          {unresolved.length > 0 && (
-            <details className="memory-history">
-              <summary>Unresolved information ({unresolved.length})</summary>
-              <p className="muted">
-                These statements need clearer evidence and are not shown as
-                established reminders.
-              </p>
-              {unresolved.map(renderFact)}
-            </details>
-          )}
-          {history.length > 0 && (
-            <details className="memory-history">
-              <summary>
-                Previous and removed information ({history.length})
-              </summary>
-              {history.map(renderFact)}
-            </details>
-          )}
+          <ProfileFacts facts={person.facts} busy={busy} onChange={changeFact} />
           <section className="profile-section">
             <h2>Previous encounters</h2>
             {person.encounters.length ? (

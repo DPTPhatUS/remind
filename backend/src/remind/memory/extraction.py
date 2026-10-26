@@ -1,17 +1,31 @@
 """Structured, evidence-backed conversational memories.
 
-Language understanding belongs to two independent model passes. This module applies
+Language understanding belongs to two separate model passes. This module applies
 source, speaker-role and write-scope checks without restricting natural English to
 specific introductions or sentence patterns.
 """
 
+from collections.abc import Collection, Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from remind.database import Record
+
 Category = Literal[
-    "identity", "relationship", "age", "work", "education", "residence", "interests",
-    "preferences", "routines", "family", "experiences", "plans", "other",
+    "identity",
+    "relationship",
+    "age",
+    "work",
+    "education",
+    "residence",
+    "interests",
+    "preferences",
+    "routines",
+    "family",
+    "experiences",
+    "plans",
+    "other",
 ]
 
 
@@ -53,12 +67,18 @@ class VerificationResult(BaseModel):
     assessments: list[FactAssessment]
 
 
-def normalize(value):
-    return " ".join(str(value).split())
+def normalize(value: str) -> str:
+    return " ".join(value.split())
 
 
-def validate_extraction(result, segments, verification, existing_facts=(), current_ids=None):
-    """Allow only independently verified claims with genuine visitor evidence.
+def validate_extraction(
+    result: Record,
+    segments: Sequence[Record],
+    verification: Record,
+    existing_facts: Sequence[Record] = (),
+    current_ids: Collection[str] | None = None,
+) -> Record:
+    """Allow only separately verified claims with genuine visitor evidence.
 
     `segments` may include bounded prior dialogue from this encounter. Evidence
     identifiers are global, so quotes in adjacent clips cannot be confused.
@@ -69,8 +89,8 @@ def validate_extraction(result, segments, verification, existing_facts=(), curre
     known = {f["id"]: f for f in existing_facts}
     assessments = verification.get("assessments", [])
     # Duplicate or contradictory assessments are not affirmative verification.
-    counts = {}
-    approved = set()
+    counts: dict[int, int] = {}
+    approved: set[int] = set()
     for assessment in assessments:
         idx = assessment.get("fact_index")
         if type(idx) is not int:
@@ -78,7 +98,7 @@ def validate_extraction(result, segments, verification, existing_facts=(), curre
         counts[idx] = counts.get(idx, 0) + 1
         if assessment.get("supported") is True:
             approved.add(idx)
-    accepted = []
+    accepted: list[Record] = []
     for idx, proposed in enumerate(result.get("facts", [])):
         if idx not in approved or counts.get(idx) != 1:
             continue

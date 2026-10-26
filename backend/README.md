@@ -15,8 +15,7 @@ reference versions. Leases, transactional writes, and idempotent windows protect
 retries and restarts. Source transcripts and structured evidence support correction
 and forgetting. No video is decoded for voice recognition.
 
-No schema/API compatibility or migration is provided. Reset old development data
-once for this rewrite. Startup only creates the current schema and recovers work;
-it never intentionally wipes current memories.
+Startup creates the current schema and recovers unfinished work. Normal restarts
+preserve memories. Older schemas are not supported; there is no migration layer.
 
 [API contract](docs/API.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)
