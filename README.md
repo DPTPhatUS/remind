@@ -100,10 +100,11 @@ adapter rather than only changing the model ID.
 | `backend/src/remind/vision/` | Face detection, recognition, and model installation |
 | `backend/src/remind/audio/` | Audio decoding, user-voice verification, and cloud providers |
 | `backend/src/remind/memory/` | Evidence validation, consolidation, and durable jobs |
+| `backend/src/remind/benchmark/` | Offline video, conversation, and voice evaluation; scoring and reports |
 | `backend/src/remind/database.py` | Current SQLite schema and transactions |
 | `frontend/src/features/` | Browser capture, setup, and profile interaction logic |
 | `frontend/src/pages/` | Live view, voice setup, and People screens |
-| `benchmarks/` | Recorded-media evaluation instructions and example manifest |
+| `benchmarks/` | Evaluation instructions and an example video manifest |
 
 Development checks are installed by default by `uv sync`.
 Use `uv sync --no-dev --extra speaker` when only runtime dependencies are needed.

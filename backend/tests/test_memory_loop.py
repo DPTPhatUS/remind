@@ -52,7 +52,12 @@ class Provider:
     async def verify(self, facts, dialogue, existing_facts):
         return {
             "assessments": [
-                {"fact_index": i, "supported": True, "reason": "Fixture semantic verification"}
+                {
+                    "fact_index": i,
+                    "supported": True,
+                    "affirmative": True,
+                    "reason": "Fixture semantic verification",
+                }
                 for i in range(len(facts))
             ]
         }
@@ -67,6 +72,7 @@ def claim(segment, predicate="name", value="Anna", category="identity", evidence
         "category": category,
         "predicate": predicate,
         "value": value,
+        "polarity": "affirmative",
         "temporal_status": "current",
         "valid_from": None,
         "valid_to": None,

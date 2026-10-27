@@ -15,6 +15,7 @@ def fact(value="Anna", **kwargs):
         "category": "identity",
         "predicate": "name",
         "value": value,
+        "polarity": "affirmative",
         "temporal_status": "current",
         "valid_from": None,
         "valid_to": None,
@@ -28,7 +29,7 @@ def fact(value="Anna", **kwargs):
 def verified(*supported):
     return {
         "assessments": [
-            {"fact_index": i, "supported": yes, "reason": "Fixture assessment"}
+            {"fact_index": i, "supported": yes, "affirmative": yes, "reason": "Fixture assessment"}
             for i, yes in enumerate(supported)
         ]
     }
@@ -161,3 +162,199 @@ def test_past_and_planned_claims_keep_dates_and_temporal_meaning():
         saved = accepted(claim, [turn("new:1", text)])[0]
         assert saved["temporal_status"] == status
         assert saved["valid_from"] == "2026-10-27"
+
+
+@pytest.mark.parametrize(
+    "category,predicate",
+    [
+        ("relationship", "relationship to user"),
+        ("relationship", "relationship_to_user"),
+        ("identity", "relationship"),
+        ("age", "stated_age"),
+        ("family", "relationship"),
+    ],
+)
+def test_identity_fields_require_canonical_category_and_predicate(category, predicate):
+    claim = fact("daughter", category=category, predicate=predicate)
+    assert accepted(claim, [turn("new:1", "Everyone calls me Anna.")]) == []
+
+
+def test_misplaced_core_field_is_rejected_without_discarding_valid_sibling_claims():
+    from remind.memory.extraction import ExtractionResult
+
+    text = "My name is Anna. My brother is forty two."
+    evidence = [{"segment_id": "new:1", "quote": text}]
+    result = ExtractionResult.model_validate(
+        {
+            "summary": "Anna introduced herself and mentioned her brother's age.",
+            "facts": [
+                fact("Anna", evidence=evidence),
+                fact(
+                    "42", subject="brother", category="family", predicate="age", evidence=evidence
+                ),
+            ],
+        }
+    )
+    validated = validate_extraction(
+        result.model_dump(),
+        [turn("new:1", text)],
+        verified(True, True),
+        current_ids={"new:1"},
+    )
+    assert [(claim["predicate"], claim["value"]) for claim in validated["facts"]] == [
+        ("name", "Anna"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "category,predicate,value",
+    [
+        ("identity", "name", "Ben"),
+        ("age", "age", "48"),
+        ("relationship", "relationship", "brother"),
+    ],
+)
+def test_denied_identity_values_cannot_become_positive_profile_fields(category, predicate, value):
+    text = "No, that is not correct. Please do not assume those things about me."
+    claim = fact(
+        value,
+        category=category,
+        predicate=predicate,
+        polarity="negative",
+        evidence=[{"segment_id": "new:1", "quote": text}],
+    )
+    # Even an incorrect affirmative assessment cannot turn a declared denial into a fact.
+    assert accepted(claim, [turn("new:1", text)]) == []
+    claim["polarity"] = "affirmative"
+    assessment = {
+        "assessments": [
+            {"fact_index": 0, "supported": True, "affirmative": False, "reason": "Denial only"}
+        ]
+    }
+    assert accepted(claim, [turn("new:1", text)], assessment) == []
+
+
+def test_asserted_negative_preference_and_approximate_age_remain_supported():
+    for category, predicate, value, text in [
+        ("preferences", "drink_preference", "dislikes coffee", "I do not like coffee."),
+        ("age", "age", "about 50", "I am about fifty."),
+        ("age", "age", "in my thirties", "I am in my thirties."),
+    ]:
+        claim = fact(
+            value,
+            category=category,
+            predicate=predicate,
+            evidence=[{"segment_id": "new:1", "quote": text}],
+        )
+        saved = accepted(claim, [turn("new:1", text)])[0]
+        assert saved["value"] == value
+        assert "polarity" not in saved
+
+
+def test_explicit_age_correction_keeps_new_value_target_and_current_evidence():
+    previous = turn("old:1", "I am 42 years old.")
+    current = turn("new:1", "I misspoke about my age. I am thirty two, not forty two.")
+    existing = [{"id": "age-42", "subject": "visitor", "predicate": "age", "manual": False}]
+    replacement = fact(
+        "32",
+        category="age",
+        predicate="age",
+        operation="correct",
+        target_fact_id="age-42",
+        evidence=[
+            {
+                "segment_id": "new:1",
+                "quote": current["text"],
+            }
+        ],
+    )
+    saved = accepted(
+        replacement, [previous, current], existing_facts=existing, current_ids={"new:1"}
+    )[0]
+    assert (saved["value"], saved["operation"], saved["target_fact_id"]) == (
+        "32",
+        "correct",
+        "age-42",
+    )
+    stale = {
+        **replacement,
+        "value": "42",
+        "temporal_status": "past",
+        "evidence": [
+            {
+                "segment_id": "old:1",
+                "quote": previous["text"],
+            }
+        ],
+    }
+    assert (
+        accepted(stale, [previous, current], existing_facts=existing, current_ids={"new:1"}) == []
+    )
+
+
+def test_provider_schema_has_required_polarity_and_canonical_identity_branches():
+    from remind.memory.extraction import ExtractionResult, VerificationResult
+
+    schema = ExtractionResult.model_json_schema()
+    assert len(schema["properties"]["facts"]["items"]["anyOf"]) == 4
+    for branch, category, predicate in [
+        ("NameFact", "identity", "name"),
+        ("AgeFact", "age", "age"),
+        ("RelationshipFact", "relationship", "relationship"),
+    ]:
+        definition = schema["$defs"][branch]
+        assert definition["properties"]["category"]["const"] == category
+        assert definition["properties"]["predicate"]["const"] == predicate
+        assert "polarity" in definition["required"]
+    verifier = VerificationResult.model_json_schema()["$defs"]["FactAssessment"]
+    assert "affirmative" in verifier["required"]
+    assert schema["$defs"]["RelationshipFact"]["properties"]["subject"]["const"] == "visitor"
+
+
+def test_visitor_relationship_cannot_turn_the_relationship_value_into_a_subject():
+    text = "I am your daughter."
+    claim = fact(
+        "daughter",
+        category="relationship",
+        predicate="relationship",
+        evidence=[{"segment_id": "new:1", "quote": text}],
+    )
+    assert accepted({**claim, "subject": "daughter"}, [turn("new:1", text)]) == []
+    saved = accepted(claim, [turn("new:1", text)])[0]
+    assert (saved["subject"], saved["predicate"], saved["value"]) == (
+        "visitor",
+        "relationship",
+        "daughter",
+    )
+
+
+def test_mentioned_relative_relationship_remains_a_family_claim():
+    text = "My brother is your nephew."
+    claim = fact(
+        "nephew",
+        category="family",
+        predicate="relationship_to_user",
+        subject="brother",
+        evidence=[{"segment_id": "new:1", "quote": text}],
+    )
+    saved = accepted(claim, [turn("new:1", text)])[0]
+    assert (saved["subject"], saved["category"], saved["predicate"]) == (
+        "brother",
+        "family",
+        "relationship_to_user",
+    )
+
+
+@pytest.mark.parametrize(
+    "category,predicate,value", [("identity", "name", "Ben"), ("age", "age", "42")]
+)
+def test_name_and_age_claims_can_still_describe_a_relative(category, predicate, value):
+    text = "My brother is Ben, and he is forty two."
+    claim = fact(
+        value,
+        category=category,
+        predicate=predicate,
+        subject="brother",
+        evidence=[{"segment_id": "new:1", "quote": text}],
+    )
+    assert accepted(claim, [turn("new:1", text)])[0]["subject"] == "brother"

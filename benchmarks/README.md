@@ -5,6 +5,27 @@ outside Git. See [the evaluation protocol](../docs/testing/realtime-memory-evalu
 for fixture scope, metrics, and later staged-conversation evaluation.
 The included example manifest contains placeholders, not a dataset.
 
+## Evaluation code
+
+`backend/src/remind/benchmark/` contains the offline runners and scoring code.
+`benchmarks/` contains this guide and the example video manifest. Keep generated
+fixtures and reports in an isolated `.local/` directory or outside the repository.
+
+| Module | Purpose |
+| --- | --- |
+| `video_replay.py` | Replay labelled video through face detection and recognition |
+| `vision_metrics.py` | Score video frame throughput and face identification |
+| `trace_metrics.py` | Score browser timing and independently labelled session outcomes |
+| `conversation_replay.py` | Run recorded conversations through the production memory worker |
+| `conversation_metrics.py` | Score conversation roles, saved facts, and transcription |
+| `audio_fixture.py` | Generate labelled synthetic conversations locally |
+| `voice_smoke.py` | Check ECAPA using separate public enrollment and test recordings |
+| `metrics.py` | Shared fractions and latency percentiles |
+| `report.py` | Shared JSON output and video/trace report bundles |
+
+Use `python -m remind.cli benchmark` for video replay and
+`python -m remind.cli evaluate-trace` for browser traces.
+
 ## Logic and browser runners
 
 ```bash
@@ -58,7 +79,7 @@ utterances. Nothing is uploaded to OpenAI:
 
 ```bash
 cd backend
-uv run --extra speaker python -m remind.audio.smoke --download --output /tmp/remind-voice-smoke.json
+uv run --extra speaker python -m remind.benchmark.voice_smoke --download --output /tmp/remind-voice-smoke.json
 ```
 
 The report separates correct assignments, abstentions, wrong assignments, model
@@ -135,3 +156,47 @@ as evidence near the 0.1% false-identity target. A small pilot is only a pilot.
 No patient recordings or held-out accuracy dataset are included. Record actual
 measurements separately from fixture results; successful tests do not establish
 that the evaluation gates have passed.
+
+## Audio through saved memories
+
+The audio replay evaluates the production conversation worker: file decoding,
+cloud transcription, local ECAPA roles, cloud extraction/verification, SQLite
+consolidation, and readback after reopening the database. Only the visible face
+and its capture-time presence are supplied by the fixture. Labels and expected
+facts never enter the model requests. Each scenario gets an isolated temporary
+store; the application's memories are not modified.
+
+For a repeatable synthetic diagnostic, install FFmpeg with its Flite filter, then:
+
+```bash
+cd backend
+uv run --extra speaker python -m remind.benchmark.audio_fixture --output-dir .local/audio-evaluation/fixtures
+uv run --extra speaker python -m remind.benchmark.conversation_replay .local/audio-evaluation/fixtures/manifest.json --output .local/audio-evaluation/full-chain.json --cloud
+```
+
+`--cloud` explicitly enables paid requests using the configured API key. Audio
+is sent to the transcription provider and dialogue to the text provider. The
+fixture generator itself is local. It creates three separate enrollment samples
+and eight-second WebM/Opus clips for introductions, contextual confirmation,
+rejected identity claims, relatives, age correction, and a short reply.
+
+Use the same manifest shape for consented human recordings: `source_kind` is
+`human_recording`, paths are relative to the manifest, every recording needs its
+SHA-256, and each clip has independently labelled speech intervals/text/roles.
+Write expected subject/predicate/value/temporal-status claims before inference.
+An expected claim with `present: false` is a required absence check. The expected
+list must cover all supported facts; exact unmatched paraphrases require manual
+review rather than an automatic claim that the model was wrong.
+
+Reports retain transcripts, voice scores, candidate claims, verification reasons,
+saved facts/evidence, failed jobs, stage timings, and restart comparisons. They
+separate wrong roles, abstentions, missed speech, missing facts, unsupported
+additions, wrong subjects, and word error rate. Short confirmations still count
+in useful-fact coverage when uncertainty prevents learning. A completed job is
+not an accuracy pass. Successful-commit timing starts after replay enqueue and
+excludes microphone capture, recording time, and upload delay.
+
+Synthetic diagnostics do not establish natural-human or room-microphone accuracy.
+The separate public human-audio smoke tests acoustic changes and conservative
+role decisions using annotated speakers; automatic diarization is exercised only
+by the cloud replay. Neither replaces staged conversations on the actual device.

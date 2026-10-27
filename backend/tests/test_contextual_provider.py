@@ -32,6 +32,7 @@ async def test_contextual_extraction_requires_a_separate_verification_pass(provi
             "category": "work",
             "predicate": "occupation",
             "value": value,
+            "polarity": "affirmative",
             "temporal_status": "current",
             "valid_from": None,
             "valid_to": None,
@@ -44,8 +45,18 @@ async def test_contextual_extraction_requires_a_separate_verification_pass(provi
     extraction = ExtractionResult(summary="They discussed work.", facts=candidates)
     assessment = VerificationResult(
         assessments=[
-            {"fact_index": 0, "supported": False, "reason": "Teaching concerns the brother."},
-            {"fact_index": 1, "supported": True, "reason": "Visitor explicitly states their work."},
+            {
+                "fact_index": 0,
+                "supported": False,
+                "affirmative": False,
+                "reason": "Teaching concerns the brother.",
+            },
+            {
+                "fact_index": 1,
+                "supported": True,
+                "affirmative": True,
+                "reason": "Visitor explicitly states their work.",
+            },
         ]
     )
     parse = AsyncMock(

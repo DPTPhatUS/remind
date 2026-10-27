@@ -8,25 +8,9 @@ specific introductions or sentence patterns.
 from collections.abc import Collection, Sequence
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from remind.database import Record
-
-Category = Literal[
-    "identity",
-    "relationship",
-    "age",
-    "work",
-    "education",
-    "residence",
-    "interests",
-    "preferences",
-    "routines",
-    "family",
-    "experiences",
-    "plans",
-    "other",
-]
 
 
 class Evidence(BaseModel):
@@ -35,18 +19,61 @@ class Evidence(BaseModel):
     quote: str = Field(min_length=1, max_length=2000)
 
 
-class ProposedFact(BaseModel):
+class FactFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
     subject: str = Field(min_length=1, max_length=100)
-    category: Category
-    predicate: str = Field(min_length=1, max_length=80)
     value: str = Field(min_length=1, max_length=500)
+    polarity: Literal["affirmative", "negative"] = Field(
+        description="Whether the visitor asserts or denies this predicate/value."
+    )
     temporal_status: Literal["current", "past", "planned"]
     valid_from: str | None
     valid_to: str | None
     operation: Literal["add", "correct", "change"]
     target_fact_id: str | None
     evidence: list[Evidence] = Field(min_length=1, max_length=12)
+
+
+class NameFact(FactFields):
+    category: Literal["identity"]
+    predicate: Literal["name"]
+
+
+class AgeFact(FactFields):
+    category: Literal["age"]
+    predicate: Literal["age"]
+    value: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Stated age: digits for an exact age, preserving stated approximations.",
+    )
+
+
+class RelationshipFact(FactFields):
+    subject: Literal["visitor"]
+    category: Literal["relationship"]
+    predicate: Literal["relationship"]
+
+
+class BackgroundFact(FactFields):
+    category: Literal[
+        "work",
+        "education",
+        "residence",
+        "interests",
+        "preferences",
+        "routines",
+        "family",
+        "experiences",
+        "plans",
+        "other",
+    ]
+    predicate: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+
+
+# A plain union emits anyOf, which the provider's structured-output schema supports.
+ProposedFact = NameFact | AgeFact | RelationshipFact | BackgroundFact
+FACT_ADAPTER: TypeAdapter[ProposedFact] = TypeAdapter(ProposedFact)
 
 
 class ExtractionResult(BaseModel):
@@ -59,6 +86,9 @@ class FactAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     fact_index: int = Field(ge=0)
     supported: bool
+    affirmative: bool = Field(
+        description="The visitor asserts this value; a denial alone is not affirmative support."
+    )
     reason: str = Field(max_length=500)
 
 
@@ -96,15 +126,24 @@ def validate_extraction(
         if type(idx) is not int:
             continue
         counts[idx] = counts.get(idx, 0) + 1
-        if assessment.get("supported") is True:
+        if assessment.get("supported") is True and assessment.get("affirmative") is True:
             approved.add(idx)
     accepted: list[Record] = []
     for idx, proposed in enumerate(result.get("facts", [])):
         if idx not in approved or counts.get(idx) != 1:
             continue
         try:
-            fact = ProposedFact.model_validate(proposed).model_dump()
+            fact = FACT_ADAPTER.validate_python(proposed).model_dump()
         except (ValidationError, TypeError):
+            continue
+        if fact.pop("polarity") != "affirmative":
+            continue
+        if fact["category"] not in {"identity", "age", "relationship"} and fact["predicate"] in {
+            "name",
+            "age",
+            "relationship",
+        }:
+            # A misplaced core field invalidates this claim, not valid sibling claims.
             continue
         fact["subject"] = normalize(fact["subject"])
         fact["predicate"] = normalize(fact["predicate"])

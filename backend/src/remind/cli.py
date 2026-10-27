@@ -14,11 +14,13 @@ def main() -> None:
     models = commands.add_parser("models")
     models.add_argument("action", choices=["install"])
     commands.add_parser("doctor")
-    bench = commands.add_parser("benchmark")
+    bench = commands.add_parser("benchmark", help="Replay recorded video through face recognition")
     bench.add_argument("manifest", type=Path)
     bench.add_argument("--output", type=Path, required=True)
     bench.add_argument("--mode", choices=["realtime", "throughput"], default="realtime")
-    evaluate = commands.add_parser("evaluate-trace")
+    evaluate = commands.add_parser(
+        "evaluate-trace", help="Score an annotated browser-session trace"
+    )
     evaluate.add_argument("trace", type=Path)
     evaluate.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -51,8 +53,8 @@ def main() -> None:
         result["thresholds_calibrated"] = False
         print(json.dumps(result, indent=2))
     elif args.command == "evaluate-trace":
-        from remind.benchmark.metrics import evaluate_trace
         from remind.benchmark.report import write_report
+        from remind.benchmark.trace_metrics import evaluate_trace
 
         trace = json.loads(args.trace.read_text())
         result = evaluate_trace(trace)
@@ -60,11 +62,11 @@ def main() -> None:
         write_report(result, args.output)
         print(json.dumps(result, indent=2))
     else:
-        from remind.benchmark.replay import replay
         from remind.benchmark.report import write_report
+        from remind.benchmark.video_replay import replay_video
 
         started = time.monotonic()
-        result = replay(args.manifest, settings, args.mode)
+        result = replay_video(args.manifest, settings, args.mode)
         result["wall_seconds"] = time.monotonic() - started
         write_report(result, args.output)
         print(json.dumps(result, indent=2))

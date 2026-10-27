@@ -1,3 +1,5 @@
+"""Replay labelled video through the production face-recognition models."""
+
 import hashlib
 import json
 import math
@@ -8,7 +10,7 @@ from typing import Any, Literal, cast
 
 import cv2
 
-from remind.benchmark.metrics import identification_metrics, summarize
+from remind.benchmark.vision_metrics import identification_metrics, summarize
 from remind.config import Settings
 from remind.vision.engine import OpenCVVision
 from remind.vision.gallery import FaceGallery
@@ -16,7 +18,7 @@ from remind.vision.models import ModelRegistry
 from remind.vision.types import CameraImage
 
 
-def replay(
+def replay_video(
     path: str | Path, settings: Settings, mode: Literal["realtime", "throughput"]
 ) -> dict[str, Any]:
     if mode not in ("realtime", "throughput"):
