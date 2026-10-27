@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(
         default="", validation_alias=AliasChoices("REMIND_OPENAI_API_KEY", "OPENAI_API_KEY")
     )
-    openai_text_model: str = "gpt-4.1-mini"
+    openai_text_model: str = "gpt-6-luna"
     openai_transcribe_model: str = "gpt-4o-transcribe-diarize"
     match_threshold: float = Field(default=0.55, ge=0, le=1)
     match_margin: float = Field(default=0.08, ge=0, le=1)

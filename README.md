@@ -86,9 +86,10 @@ model smokes do not establish real-world recognition or personal-fact accuracy.
 Normal restarts preserve learned memories. The current SQLite schema is created
 on first startup; there is no migration or older-version support.
 
-Provider model IDs are configurable in `backend/.env`. A transcription provider
-must return speaker labels and timestamps; changing providers may require an
-adapter rather than only changing the model ID.
+Extraction and verification default to `gpt-6-luna`; transcription defaults to
+`gpt-4o-transcribe-diarize`. Model IDs are configurable in `backend/.env`.
+A transcription provider must return speaker labels and timestamps; changing
+providers may require an adapter rather than only changing the model ID.
 
 ## Code layout
 
