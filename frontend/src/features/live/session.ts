@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { downloadFile } from "@/lib/download";
 import type {
   FaceTrack,
   SessionStatus,
@@ -41,7 +40,6 @@ export function useLiveSession() {
     dropped: 0,
   });
   const resources = useRef<Resources>({});
-  const trace = useRef<Record<string, unknown>[]>([]);
   const epoch = useRef(0);
   const lastResult = useRef(0);
   const stop = useCallback(async () => {
@@ -77,7 +75,6 @@ export function useLiveSession() {
     }
     const token = ++epoch.current;
     retainedClips.current = null;
-    trace.current = [];
     setStatus("starting");
     setError("");
     setMemoryStatus("");
@@ -127,22 +124,6 @@ export function useLiveSession() {
           return;
         lastSequence = message.sequence;
         lastResult.current = now;
-        const entry: Record<string, unknown> = {
-          generation: session.generation,
-          sequence: message.sequence,
-          capture_ms: message.capture_ms,
-          received_ms: now,
-          processing_ms: message.processing_ms,
-          clock: "browser-performance",
-          faces: message.tracks.length,
-          dropped: message.dropped,
-        };
-        if (trace.current.length < 100000) trace.current.push(entry);
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (token === epoch.current) entry.painted_ms = performance.now();
-          }),
-        );
         setTracks(message.tracks);
         setDiagnostics({
           fps: message.processed_fps,
@@ -265,20 +246,6 @@ export function useLiveSession() {
       setError(String(error));
     }
   };
-  const exportTrace = () => {
-    const data = {
-      schema: 1,
-      model_backend: "real",
-      browser: navigator.userAgent,
-      timing_note:
-        "painted_ms is a two-animation-frame upper bound after result receipt",
-      frames: trace.current,
-    };
-    downloadFile(
-      new Blob([JSON.stringify(data)], { type: "application/json" }),
-      "remind-performance.json",
-    );
-  };
   return {
     attachVideo,
     status,
@@ -290,7 +257,6 @@ export function useLiveSession() {
     uploadPaused,
     retryUpload,
     downloadClip,
-    exportTrace,
     retryJobs,
     tracks,
     diagnostics,

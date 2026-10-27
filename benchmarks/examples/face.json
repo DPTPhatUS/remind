@@ -1,0 +1,62 @@
+{
+  "title": "Replace with a labelled recording",
+  "annotation_notes": "Create independent annotations before running inference. Media paths and hashes below are placeholders.",
+  "sources": [
+    {
+      "id": "source",
+      "description": "Replace with source description",
+      "url": "https://example.com/replace",
+      "usage_terms": "Replace with verified source terms and attribution"
+    }
+  ],
+  "limitations": [
+    "Replace placeholders and document missing coverage."
+  ],
+  "cases": [
+    {
+      "id": "wearer",
+      "encounters": [
+        {
+          "id": "conversation",
+          "path": "media/conversation.mp4",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_id": "source",
+          "source_start_ms": 20000,
+          "source_end_ms": 28000,
+          "preprocessing": [
+            "Replace with exact preprocessing command"
+          ],
+          "visitor_id": "visitor-1",
+          "visible": [
+            {
+              "start_ms": 0,
+              "end_ms": 8000,
+              "face_count": 1,
+              "visitor_id": "visitor-1"
+            }
+          ]
+        },
+        {
+          "id": "return",
+          "path": "media/return.mp4",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_id": "source",
+          "source_start_ms": 30000,
+          "source_end_ms": 38000,
+          "preprocessing": [
+            "Replace with exact preprocessing command"
+          ],
+          "visitor_id": "visitor-1",
+          "visible": [
+            {
+              "start_ms": 0,
+              "end_ms": 8000,
+              "face_count": 1,
+              "visitor_id": "visitor-1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

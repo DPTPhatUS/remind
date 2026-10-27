@@ -20,7 +20,7 @@ time. Face templates and user voice representations are never returned publicly.
 | POST | `/jobs/{id}/retry` | Retries retained failed work; cancelled/forgotten work409 |
 | POST | `/session` | `generation,memory_available,voice_ready,profile_learning_available` |
 | POST | `/session/{generation}/stop` | Closes encounter; background processing remains durable |
-| POST | `/live/{generation}/clips?metadata=...` | Binary independently decodable WebM, at most16MiB |
+| POST | `/live/{generation}/clips?metadata=...` | Independently decodable audio: browser WebM or benchmark WAV, at most16MiB |
 | WS | `/live/{generation}/vision` | Camera packets and normalized face results |
 
 Enrollment accepts raw base64 (no data-URL prefix), max4MiB per sample and16MiB
@@ -46,6 +46,10 @@ Clips spanning different encounters are not assigned to the current visitor.
 Multiple/unknown faces make overlapping speech ineligible for personal learning.
 Voice roles user/visitor/uncertain are computed within each clip, never inferred
 from reused anonymous speaker labels across clips.
+
+The face/video benchmarks use a source-relative clock for vision and, in video mode,
+clip metadata. It sends clean WAV bodies through the same clip endpoint; media
+is decoded from its contents. Browser capture continues to send synchronized WebM.
 
 Vision packet: uint32 big-endian header length, UTF-8 JSON header, JPEG bytes.
 Header `{version:1,generation,sequence,capture_ms,width,height}`, max8KiB;

@@ -31,6 +31,43 @@ def public_person(person: Record) -> Record:
     return {**person, "highlights": json.loads(person["highlights"])}
 
 
+async def save_conversation_result(
+    db: aiosqlite.Connection,
+    encounter_id: str,
+    job_id: str,
+    person: Record | None,
+    result: Record,
+    order: float,
+) -> None:
+    """Persist within a transaction; person must be an authorized raw store row."""
+    for segment in result.get("segments", []):
+        segment_id = segment.get("id")
+        if not isinstance(segment_id, str) or not segment_id:
+            continue
+        await db.execute(
+            "INSERT OR IGNORE INTO transcripts VALUES(?,?,?,?,?)",
+            (segment_id, job_id, encounter_id, segment.get("start_ms", 0), json.dumps(segment)),
+        )
+    transcript_rows = await rows(
+        db, "SELECT id,data FROM transcripts WHERE encounter_id=?", (encounter_id,)
+    )
+    sources = {source["id"]: json.loads(source["data"]) for source in transcript_rows}
+    if person is not None:
+        for fact in result.get("facts", []):
+            await save_claim(db, person, encounter_id, job_id, fact, sources)
+        await refresh_profile(db, person["id"])
+    await db.execute(
+        "UPDATE encounters SET summary=COALESCE(?,summary),summary_order=? "
+        "WHERE id=? AND summary_order<=?",
+        (result.get("summary"), order, encounter_id, order),
+    )
+    if result.get("metrics") is not None:
+        await db.execute(
+            "INSERT OR REPLACE INTO job_metrics VALUES(?,?)",
+            (job_id, json.dumps(result["metrics"])),
+        )
+
+
 class MemoryStore:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -561,18 +598,6 @@ class MemoryStore:
                     (ident,),
                 )
                 return False
-            for segment in result.get("segments", []):
-                segment_id = segment.get("id")
-                if not isinstance(segment_id, str) or not segment_id:
-                    continue
-                await db.execute(
-                    "INSERT OR IGNORE INTO transcripts VALUES(?,?,?,?,?)",
-                    (segment_id, ident, eid, segment.get("start_ms", 0), json.dumps(segment)),
-                )
-            transcript_rows = await rows(
-                db, "SELECT id,data FROM transcripts WHERE encounter_id=?", (eid,)
-            )
-            sources = {source["id"]: json.loads(source["data"]) for source in transcript_rows}
             visitor_id = payload.get("visitor_id")
             people = (
                 await rows(db, "SELECT * FROM people WHERE id=?", (visitor_id,))
@@ -588,26 +613,15 @@ class MemoryStore:
                 if visitor_id
                 else []
             )
-            if (
+            allowed = bool(
                 people
                 and participant
                 and voice["embeddings"]
                 and visitor_id in payload.get("versions", {})
-            ):
-                for fact in result.get("facts", []):
-                    await save_claim(db, people[0], eid, ident, fact, sources)
-                await refresh_profile(db, visitor_id)
-            order = payload.get("end_ms", 0)
-            await db.execute(
-                "UPDATE encounters SET summary=COALESCE(?,summary),summary_order=? "
-                "WHERE id=? AND summary_order<=?",
-                (result.get("summary"), order, eid, order),
             )
-            if result.get("metrics") is not None:
-                await db.execute(
-                    "INSERT OR REPLACE INTO job_metrics VALUES(?,?)",
-                    (ident, json.dumps(result["metrics"])),
-                )
+            await save_conversation_result(
+                db, eid, ident, people[0] if allowed else None, result, payload.get("end_ms", 0)
+            )
             await db.execute(
                 "UPDATE jobs SET status='done',lease_token=NULL,error=NULL WHERE id=?", (ident,)
             )

@@ -3,16 +3,13 @@
 import numpy as np
 import pytest
 
+from remind.audio.processing import transcript_segments
 from remind.config import Settings
 from remind.database import Database, rows
 from remind.live.session import LiveSession
+from remind.memory.learning import bounded_dialogue
 from remind.memory.store import MemoryStore
-from remind.memory.worker import (
-    MemoryWorker,
-    bounded_dialogue,
-    transcript_segments,
-    visitor_supported,
-)
+from remind.memory.worker import MemoryWorker, visitor_supported
 
 
 class Verifier:
@@ -126,13 +123,13 @@ async def queue(store, pid, key="intro", start=0, encounter=None, eligible=True)
 
 def inject_audio(monkeypatch, continuous=True):
     monkeypatch.setattr(
-        "remind.memory.worker.decode_audio",
+        "remind.audio.processing.decode_audio",
         lambda _: {
             "pcm": np.ones(32000, dtype=np.int16),
             "continuous": continuous,
         },
     )
-    monkeypatch.setattr("remind.memory.worker.has_speech", lambda pcm: True)
+    monkeypatch.setattr("remind.audio.processing.has_speech", lambda pcm: True)
 
 
 async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkeypatch):
@@ -389,7 +386,7 @@ async def test_silence_finishes_without_sending_audio_to_provider(tmp_path, monk
     person = await store.create_person()
     job_id, payload = await queue(store, person["id"])
     inject_audio(monkeypatch)
-    monkeypatch.setattr("remind.memory.worker.has_speech", lambda pcm: False)
+    monkeypatch.setattr("remind.audio.processing.has_speech", lambda pcm: False)
 
     class UnusedProvider(Provider):
         async def transcribe(self, pcm):

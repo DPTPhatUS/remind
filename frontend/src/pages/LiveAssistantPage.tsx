@@ -67,7 +67,6 @@ export function LiveAssistantPage() {
     uploadPaused,
     retryUpload,
     downloadClip,
-    exportTrace,
     retryJobs,
     tracks,
     diagnostics,
@@ -200,9 +199,6 @@ export function LiveAssistantPage() {
           Background voices can be mistaken for that visitor. Recognition and
           voice thresholds need calibration on encounter recordings.
         </p>
-        <button className="secondary" onClick={exportTrace}>
-          Download performance trace
-        </button>
       </details>
     </main>
   );

@@ -39,8 +39,9 @@ and flushes the final clip. Keep the backend on localhost.
   or can be corrected in People; there is no name-selection step.
 - Local CPU SpeechBrain ECAPA-TDNN compares speech with the saved user reference.
   Clear non-user speech is assumed to belong to the single visible visitor.
-  Silence, overlapping speech, very short speech, and uncertain matches cannot
-  establish personal facts. Anonymous transcription labels are local to each clip.
+  Silence, detected overlapping turns, insufficient usable speech, and uncertain
+  matches cannot establish personal facts. Anonymous transcription labels are
+  local to each clip. Overlap missed by transcription can still be misclassified.
 - Multiple faces or an uncertain face suspend profile learning. Changing visitors
   starts a separate encounter. Delayed clips retain their capture-time identity.
 - OpenAI provides English speaker-labelled transcription, contextual fact
@@ -101,11 +102,12 @@ providers may require an adapter rather than only changing the model ID.
 | `backend/src/remind/vision/` | Face detection, recognition, and model installation |
 | `backend/src/remind/audio/` | Audio decoding, user-voice verification, and cloud providers |
 | `backend/src/remind/memory/` | Evidence validation, consolidation, and durable jobs |
-| `backend/src/remind/benchmark/` | Offline video, conversation, and voice evaluation; scoring and reports |
+| `backend/src/remind/benchmark/` | Four benchmark paths: audio, conversation, face, and video |
 | `backend/src/remind/database.py` | Current SQLite schema and transactions |
 | `frontend/src/features/` | Browser capture, setup, and profile interaction logic |
 | `frontend/src/pages/` | Live view, voice setup, and People screens |
-| `benchmarks/` | Evaluation instructions and an example video manifest |
+| `frontend/e2e/` | Application UI integration tests |
+| `benchmarks/` | Evaluation instructions, manifest examples, and public-footage audit |
 
 Development checks are installed by default by `uv sync`.
 Use `uv sync --no-dev --extra speaker` when only runtime dependencies are needed.
@@ -131,4 +133,4 @@ npm run test:e2e
 
 See [the API contract](backend/docs/API.md),
 [the evaluation protocol](docs/testing/realtime-memory-evaluation.md), and
-[browser/benchmark instructions](benchmarks/README.md).
+[benchmark and browser test instructions](benchmarks/README.md).

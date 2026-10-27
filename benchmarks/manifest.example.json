@@ -1,7 +1,0 @@
-{
-  "video": "media/return-session.mp4",
-  "sha256": "REPLACE_WITH_SHA256_OF_VIDEO",
-  "scenario": "normal-light-one-visible-face-held-out-session",
-  "gallery": [{"id": "person-001", "images": ["media/enroll-person-001.jpg"]}],
-  "single_face_labels": {"0": "person-001", "30": "person-001", "60": null}
-}

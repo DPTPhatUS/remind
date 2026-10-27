@@ -1,0 +1,68 @@
+{
+  "title": "Scripted introduction and confirmation",
+  "annotation_notes": "Independent scripted component input; supplied text and roles are trusted.",
+  "limitations": [
+    "One scripted conversation cannot establish real-world accuracy."
+  ],
+  "cases": [
+    {
+      "id": "introduction",
+      "encounters": [
+        {
+          "id": "meeting",
+          "started_at": "2026-10-27T10:00:00+07:00",
+          "batches": [
+            {
+              "id": "question",
+              "start_ms": 0,
+              "end_ms": 2000,
+              "turns": [
+                {
+                  "id": "question",
+                  "start_ms": 0,
+                  "end_ms": 2000,
+                  "role": "user",
+                  "text": "Are you Anna, my daughter?"
+                }
+              ]
+            },
+            {
+              "id": "answer",
+              "start_ms": 2000,
+              "end_ms": 6000,
+              "turns": [
+                {
+                  "id": "answer",
+                  "start_ms": 2000,
+                  "end_ms": 6000,
+                  "role": "visitor",
+                  "text": "Yes. I am thirty-two."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "id": "name",
+          "subject": "visitor",
+          "predicate": "name",
+          "value": "Anna"
+        },
+        {
+          "id": "relationship",
+          "subject": "visitor",
+          "predicate": "relationship",
+          "value": "daughter"
+        },
+        {
+          "id": "age",
+          "subject": "visitor",
+          "predicate": "age",
+          "value": "32"
+        }
+      ]
+    }
+  ]
+}
