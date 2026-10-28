@@ -2,7 +2,38 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
+
+from remind.benchmark.inputs import Kind
+from remind.benchmark.scoring import Fraction
+
+
+class CaseResult(TypedDict):
+    id: str
+    status: Literal["complete", "failed"]
+    outcomes: list[dict[str, Any]]
+    errors: list[str]
+    enrollment: NotRequired[dict[str, Any]]
+    health: NotRequired[dict[str, Any]]
+
+
+class BenchmarkReport(TypedDict):
+    kind: Kind
+    title: str
+    annotation_notes: str
+    status: Literal["running", "complete", "failed"]
+    started_at: str
+    finished_at: NotRequired[str]
+    cloud: bool
+    manifest_sha256: str
+    settings: dict[str, Any]
+    hardware: str
+    python: str
+    git_revision: str
+    code_sha256: dict[str, str]
+    model_files: dict[str, Any]
+    limitations: list[str]
+    cases: list[CaseResult]
 
 
 def write_json(value: Any, path: Path) -> None:
@@ -10,7 +41,7 @@ def write_json(value: Any, path: Path) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
-def metric_row(label: str, metric: dict) -> str:
+def metric_row(label: str, metric: Fraction) -> str:
     rate = metric.get("rate")
     value = (
         "Not measured"
@@ -20,7 +51,7 @@ def metric_row(label: str, metric: dict) -> str:
     return f"| {label} | {value} |"
 
 
-def write_report(result: dict, output: Path) -> None:
+def write_report(result: BenchmarkReport, output: Path) -> None:
     write_json(result, output / "report.json")
     lines = [
         f"# Remind {result['kind']} benchmark",

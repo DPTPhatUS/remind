@@ -8,15 +8,16 @@ from remind.audio.providers import Providers
 from remind.config import Settings
 from remind.database import Record
 from remind.memory.association import eligible_source
+from remind.memory.contracts import Metrics, TranscriptTurn
 from remind.memory.extraction import validate_extraction
 from remind.memory.store import MemoryStore
 
 MAX_DIALOGUE_CHARS = 24000
 
 
-def bounded_dialogue(segments: list[Record]) -> list[Record]:
+def bounded_dialogue(segments: list[TranscriptTurn]) -> list[TranscriptTurn]:
     """Keep the newest complete turns within the extraction input budget."""
-    dialogue = []
+    dialogue: list[TranscriptTurn] = []
     chars = 0
     for segment in reversed(segments):
         size = len(segment.get("text", ""))
@@ -34,12 +35,12 @@ async def learn_conversation(
     settings: Settings,
     encounter_id: str,
     visitor_id: str | None,
-    segments: list[Record],
+    segments: list[TranscriptTurn],
     start_ms: float,
     *,
     can_learn: bool,
 ) -> Record:
-    metrics: Record = {}
+    metrics: Metrics = {}
     encounter = await store.get_encounter(encounter_id) or {}
     encounter_time = encounter.get("started_at") or ""
     if encounter_time:

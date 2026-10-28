@@ -18,14 +18,14 @@ from remind.benchmark.inputs import (
     VideoCase,
     load_manifest,
 )
-from remind.benchmark.report import write_json, write_report
+from remind.benchmark.report import BenchmarkReport, write_json, write_report
 from remind.config import Settings
 from remind.vision.models import ModelRegistry
 
 
 def run(
     kind: Kind, manifest_path: Path, output: Path, cloud: bool, settings: Settings | None = None
-) -> dict:
+) -> BenchmarkReport:
     manifest = load_manifest(kind, manifest_path)
     settings = settings or Settings()
     if kind != "face" and not cloud:
@@ -40,7 +40,7 @@ def run(
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(manifest_path, output / "manifest.json")
     write_json(manifest.model_dump(mode="json"), output / "resolved-manifest.json")
-    result: dict = {
+    result: BenchmarkReport = {
         "kind": kind,
         "title": manifest.title,
         "annotation_notes": manifest.annotation_notes,

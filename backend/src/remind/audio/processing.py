@@ -10,10 +10,13 @@ from remind.audio.media import decode_audio, has_speech
 from remind.audio.providers import Providers
 from remind.audio.speaker import UserVoiceVerifier
 from remind.database import Record
+from remind.memory.contracts import AudioResult, Metrics, RawTranscriptTurn, TranscriptTurn
 
 
-def transcript_segments(raw: list[Record], job_id: str, duration_ms: float) -> list[Record]:
-    segments = []
+def transcript_segments(
+    raw: list[RawTranscriptTurn], job_id: str, duration_ms: float
+) -> list[TranscriptTurn]:
+    segments: list[TranscriptTurn] = []
     for index, source in enumerate(raw):
         start, end = float(source["start_ms"]), float(source["end_ms"])
         if not (math.isfinite(start) and math.isfinite(end)):
@@ -39,11 +42,11 @@ async def process_audio(
     verifier: UserVoiceVerifier,
     profile: Record | None,
     pool: Executor | None = None,
-) -> Record:
+) -> AudioResult:
     loop = asyncio.get_running_loop()
     started = time.perf_counter()
     media = await loop.run_in_executor(pool, decode_audio, path)
-    metrics = {"decode_ms": round((time.perf_counter() - started) * 1000, 2)}
+    metrics: Metrics = {"decode_ms": round((time.perf_counter() - started) * 1000, 2)}
     voice_ready = profile is not None and media["continuous"]
     status = "User voice setup required or capture reference changed"
     if not has_speech(media["pcm"]):

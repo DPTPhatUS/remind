@@ -10,13 +10,13 @@ from remind.audio.providers import Providers
 from remind.audio.speaker import UserVoiceVerifier
 from remind.benchmark.inputs import AudioCase
 from remind.benchmark.media import prepare_enrollment, prepare_media
-from remind.benchmark.report import write_json
-from remind.benchmark.scoring import score_roles, word_error_rate
+from remind.benchmark.report import CaseResult, write_json
+from remind.benchmark.scoring import score_transcript
 from remind.config import Settings
 from remind.vision.models import ModelRegistry
 
 
-async def run_case(case: AudioCase, output: Path, settings: Settings) -> dict:
+async def run_case(case: AudioCase, output: Path, settings: Settings) -> CaseResult:
     prepared = [
         prepare_media(recording, output / f"recording-{index + 1}", require_video=False)
         for index, recording in enumerate(case.recordings)
@@ -27,7 +27,7 @@ async def run_case(case: AudioCase, output: Path, settings: Settings) -> dict:
         for sample, path in zip(case.enrollment, paths, strict=True)
     ]
     verifier = UserVoiceVerifier(settings, ModelRegistry(settings.data_dir / "models"))
-    result: dict = {
+    result: CaseResult = {
         "id": case.id,
         "status": "complete",
         "outcomes": [],
@@ -82,12 +82,7 @@ async def run_case(case: AudioCase, output: Path, settings: Settings) -> dict:
                 "segments": segments,
                 "clips": clips,
                 "media": media["metadata"],
-                "scores": {
-                    "roles": score_roles(expected, segments),
-                    "transcription": word_error_rate(
-                        " ".join(t["text"] for t in expected), " ".join(s["text"] for s in segments)
-                    ),
-                },
+                "scores": score_transcript(expected, segments),
             }
             result["outcomes"].append(outcome)
             write_json(outcome, output / f"recording-{recording_index + 1}" / "observed.json")

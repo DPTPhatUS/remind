@@ -7,6 +7,7 @@ from remind.benchmark.inputs import ConversationCase
 from remind.config import Settings
 from remind.database import Database
 from remind.memory.capture import CaptureStore
+from remind.memory.jobs import JobQueue
 from remind.memory.store import MemoryStore
 
 
@@ -293,7 +294,8 @@ async def test_text_benchmark_and_live_commits_preserve_the_same_history(tmp_pat
         eid = await store.start_encounter("live-test", person["id"], 0)
         provider = Provider(propose)
         for batch in case.encounters[0].batches:
-            captures = CaptureStore(store)
+            jobs = JobQueue(database)
+            captures = CaptureStore(store, jobs)
             timeline = [
                 {
                     "ms": stamp,
@@ -314,7 +316,7 @@ async def test_text_benchmark_and_live_commits_preserve_the_same_history(tmp_pat
                 timeline,
                 voice["version"],
             )
-            audio_job = await captures.claim_job("test")
+            audio_job = await jobs.claim("test")
             assert audio_job["clip_id"] == receipt["clip_id"]
             await captures.finish_audio(
                 audio_job,
@@ -333,7 +335,7 @@ async def test_text_benchmark_and_live_commits_preserve_the_same_history(tmp_pat
                     "metrics": {},
                 },
             )
-            job = await captures.claim_job("test")
+            job = await jobs.claim("test")
             segments = await captures.learning_segments(job)
             learned = await learn_conversation(
                 store,

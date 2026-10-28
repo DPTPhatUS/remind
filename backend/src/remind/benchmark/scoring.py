@@ -4,13 +4,39 @@ import math
 import re
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, TypedDict
 
 import numpy as np
 
 
-def fraction(numerator: float, denominator: float) -> dict[str, int | float | None]:
+class Fraction(TypedDict):
+    numerator: float
+    denominator: float
+    rate: float | None
+
+
+class Percentiles(TypedDict):
+    count: int
+    p50_ms: float | None
+    p95_ms: float | None
+    p99_ms: float | None
+    max_ms: float | None
+
+
+class TranscriptionScore(TypedDict):
+    errors: int
+    reference_words: int
+    hypothesis_words: int
+    rate: float | None
+
+
+class TranscriptScores(TypedDict):
+    roles: dict[str, Any]
+    transcription: TranscriptionScore
+
+
+def fraction(numerator: float, denominator: float) -> Fraction:
     if (
         not math.isfinite(numerator)
         or not math.isfinite(denominator)
@@ -36,7 +62,7 @@ def fraction(numerator: float, denominator: float) -> dict[str, int | float | No
     }
 
 
-def percentiles(values: Sequence[float]) -> dict[str, int | float | None]:
+def percentiles(values: Sequence[float]) -> Percentiles:
     if not values:
         return {"count": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
     if any(not math.isfinite(value) or value < 0 for value in values):
@@ -51,6 +77,7 @@ def percentiles(values: Sequence[float]) -> dict[str, int | float | None]:
 
 
 Record = dict[str, Any]
+Observation = Mapping[str, Any]
 FactKey = tuple[str, str, str, str]
 ROLES = ("user", "visitor", "uncertain")
 
@@ -61,7 +88,7 @@ def _normalized(value: object) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _fact_key(fact: Record) -> FactKey:
+def _fact_key(fact: Observation) -> FactKey:
     return (
         _normalized(fact.get("subject")),
         _normalized(fact.get("predicate")),
@@ -70,7 +97,7 @@ def _fact_key(fact: Record) -> FactKey:
     )
 
 
-def score_facts(expected: Sequence[Record], actual: Sequence[Record]) -> Record:
+def score_facts(expected: Sequence[Observation], actual: Sequence[Observation]) -> Record:
     """Compare unique accepted claims; report forbidden and subject errors separately."""
     positives = {_fact_key(fact): fact for fact in expected if fact.get("present", True)}
     negatives = {_fact_key(fact): fact for fact in expected if not fact.get("present", True)}
@@ -107,7 +134,7 @@ def score_facts(expected: Sequence[Record], actual: Sequence[Record]) -> Record:
     }
 
 
-def _interval(turn: Record) -> tuple[float, float, str]:
+def _interval(turn: Observation) -> tuple[float, float, str]:
     start, end = turn.get("start_ms"), turn.get("end_ms")
     if (
         isinstance(start, bool)
@@ -126,7 +153,9 @@ def _interval(turn: Record) -> tuple[float, float, str]:
     return float(start), float(end), role
 
 
-def score_roles(expected_turns: Sequence[Record], actual_segments: Sequence[Record]) -> Record:
+def score_roles(
+    expected_turns: Sequence[Observation], actual_segments: Sequence[Observation]
+) -> Record:
     """Score labelled speech duration, including misses and conflicting predictions.
 
     Splitting a transcript turn does not change its score. Overlapping predictions
@@ -211,7 +240,7 @@ def score_roles(expected_turns: Sequence[Record], actual_segments: Sequence[Reco
     }
 
 
-def word_error_rate(reference: str, hypothesis: str) -> Record:
+def word_error_rate(reference: str, hypothesis: str) -> TranscriptionScore:
     """Case/punctuation-normalized word edit distance; empty references have no rate."""
     expected = re.findall(r"\w+(?:['’]\w+)*", reference.casefold().replace("’", "'"))
     actual = re.findall(r"\w+(?:['’]\w+)*", hypothesis.casefold().replace("’", "'"))
@@ -236,8 +265,24 @@ def word_error_rate(reference: str, hypothesis: str) -> Record:
     }
 
 
+def score_transcript(
+    expected: Sequence[Observation], actual: Sequence[Observation]
+) -> TranscriptScores:
+    return {
+        "roles": score_roles(expected, actual),
+        "transcription": word_error_rate(
+            " ".join(turn["text"] for turn in expected),
+            " ".join(segment["text"] for segment in actual),
+        ),
+    }
+
+
 def score_identity(
-    visible: list[Record], frames: list[Record], previous: dict[str, str], *, aligned: bool
+    visible: Sequence[Observation],
+    frames: Sequence[Observation],
+    previous: Mapping[str, str],
+    *,
+    aligned: bool,
 ) -> Record:
     mapping = dict(previous)
     votes: dict[str, Counter[str]] = defaultdict(Counter)
@@ -296,7 +341,7 @@ def score_identity(
     }
 
 
-def score_evidence(facts: list[Record], segments: list[Record]) -> Record:
+def score_evidence(facts: Sequence[Observation], segments: Sequence[Observation]) -> Record:
     indexed = {s["id"]: s for s in segments}
     checked = 0
     valid = 0
@@ -312,12 +357,14 @@ def score_evidence(facts: list[Record], segments: list[Record]) -> Record:
     return {"resolvable_quotes": fraction(valid, checked), "invalid_references": invalid}
 
 
-def score_memory(expected: list[Record], actual: list[Record], segments: list[Record]) -> Record:
+def score_memory(
+    expected: Sequence[Observation], actual: Sequence[Observation], segments: Sequence[Observation]
+) -> Record:
     # State is part of the expected outcome: superseded/history/plans must not be
     # credited as established current facts.
     result = score_facts([f for f in expected if f.get("status", "accepted") == "accepted"], actual)
 
-    def key(f: Record) -> tuple:
+    def key(f: Observation) -> tuple:
         return (*_fact_key(f), f.get("status", "accepted"))
 
     wanted = {
@@ -332,7 +379,7 @@ def score_memory(expected: list[Record], actual: list[Record], segments: list[Re
     return result
 
 
-def clock_time(samples: list[Record], source_ms: float) -> float | None:
+def clock_time(samples: Sequence[Observation], source_ms: float) -> float | None:
     if len(samples) < 2:
         return None
     points = [(float(s["source_ms"]), float(s["performance_ms"])) for s in samples]
@@ -347,7 +394,9 @@ def clock_time(samples: list[Record], source_ms: float) -> float | None:
     return left[1] + (source_ms - left[0]) * (right[1] - left[1]) / (right[0] - left[0])
 
 
-def score_latency(facts: list[Record], transport: Record, segments: list[Record]) -> Record:
+def score_latency(
+    facts: Sequence[Observation], transport: Observation, segments: Sequence[Observation]
+) -> Record:
     measurements = []
     evidence = {s["id"]: s for s in segments}
     prior = set(transport.get("prior_fact_ids", []))

@@ -112,25 +112,25 @@ async def enroll(session, index=0, start=0):
     return view["encounter"]["visitor_id"]
 
 
-async def test_enroll_once_and_return_after_restart(store):
-    session = LiveSession("one", store, Settings())
+async def test_enroll_once_and_return_after_restart(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     person = await enroll(session)
     for stamp in range(2400, 10000, 100):
         await session.observe([face()], stamp)
     assert len(await store.list_people()) == 1
     assert len(await store.templates()) <= 8
     await session.stop()
-    fresh = LiveSession("two", store, Settings())
+    fresh = LiveSession("two", store, Settings(), captures)
     for stamp in (0, 100, 200):
         view = await fresh.observe([face()], stamp)
     assert view["encounter"]["visitor_id"] == person
     assert view["encounter"]["memory"]["last_encounter"]
 
 
-async def test_absence_allows_five_seconds_but_not_missing_frames(store):
+async def test_absence_allows_five_seconds_but_not_missing_frames(store, captures):
     from remind.memory.association import associate_turn
 
-    session = LiveSession("one", store, Settings())
+    session = LiveSession("one", store, Settings(), captures)
     person = await enroll(session)
     for stamp in range(2400, 7300, 100):
         view = await session.observe([], stamp)
@@ -149,8 +149,8 @@ async def test_absence_allows_five_seconds_but_not_missing_frames(store):
     assert not view["encounter"]["learning_available"]
 
 
-async def test_bad_quality_keeps_history_but_does_not_extend_confirmation(store):
-    session = LiveSession("one", store, Settings())
+async def test_bad_quality_keeps_history_but_does_not_extend_confirmation(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     person = await enroll(session)
     for stamp in range(2400, 7300, 100):
         view = await session.observe([face(quality=False)], stamp)
@@ -160,8 +160,8 @@ async def test_bad_quality_keeps_history_but_does_not_extend_confirmation(store)
     assert view["encounter"]["visitor_id"] is None
 
 
-async def test_competitor_pauses_immediately_and_switches_before_absence_timeout(store):
-    session = LiveSession("one", store, Settings())
+async def test_competitor_pauses_immediately_and_switches_before_absence_timeout(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     first = await enroll(session)
     other = await store.enroll_person(b"b", [np.eye(128, dtype=np.float32)[1]])
     old = session.encounter
@@ -176,8 +176,8 @@ async def test_competitor_pauses_immediately_and_switches_before_absence_timeout
     assert before["timeline"][0]["visitor_id"] == first
 
 
-async def test_multiple_faces_barrier_cannot_be_backfilled(store):
-    session = LiveSession("one", store, Settings())
+async def test_multiple_faces_barrier_cannot_be_backfilled(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     await enroll(session)
     view = await session.observe([face(), face(1, quality=False)], 2400)
     assert view["candidate"] is None
@@ -192,8 +192,10 @@ async def test_multiple_faces_barrier_cannot_be_backfilled(store):
     assert snapshot["timeline"][-1]["eligible"]
 
 
-async def test_initial_backfill_requires_same_candidate_and_snapshot_is_independent(store):
-    session = LiveSession("one", store, Settings())
+async def test_initial_backfill_requires_same_candidate_and_snapshot_is_independent(
+    store, captures
+):
+    session = LiveSession("one", store, Settings(), captures)
     await session.observe([], 0)
     await enroll(session, start=100)
     snapshot = await session.snapshot(0, 2400)
@@ -205,8 +207,8 @@ async def test_initial_backfill_requires_same_candidate_and_snapshot_is_independ
         await session.observe([face()], 100)
 
 
-async def test_discontinuous_initial_candidate_is_not_retroactively_assigned(store):
-    session = LiveSession("one", store, Settings())
+async def test_discontinuous_initial_candidate_is_not_retroactively_assigned(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     for stamp in (0, 100, 200):
         await session.observe([face()], stamp)
     await session.observe([], 300)
@@ -216,9 +218,175 @@ async def test_discontinuous_initial_candidate_is_not_retroactively_assigned(sto
     assert not snapshot["timeline"][0]["eligible"]
 
 
-async def test_saved_memory_refreshes_without_camera_restart(store):
-    session = LiveSession("one", store, Settings())
+async def test_saved_memory_refreshes_without_camera_restart(store, captures):
+    session = LiveSession("one", store, Settings(), captures)
     person_id = await enroll(session)
     await store.correct_person(person_id, {"name": "Anna"}, 1)
     view = await session.observe([face()], 2400)
     assert view["encounter"]["memory"]["name"] == "Anna"
+
+
+async def test_known_visitors_emit_stable_encounter_timeline(store, captures):
+    first = await store.enroll_person(b"first", [face()["embedding"]])
+    second = await store.enroll_person(b"second", [face(1)["embedding"]])
+    session = LiveSession("sequence", store, Settings(), captures)
+    events = [
+        (0, [face()]),
+        (100, [face()]),
+        (200, [face()]),
+        (300, []),
+        (400, [face(), face(1)]),
+        (500, []),
+        (600, [face()]),
+        (700, [face()]),
+        (800, [face()]),
+        (900, [face(1)]),
+        (1000, [face(1)]),
+        (1100, [face(1)]),
+        (1200, []),
+        (6099, []),
+        (6100, []),
+    ]
+    views = [await session.observe(observations, stamp) for stamp, observations in events]
+    encounter_ids = [views[2]["encounter"]["id"], views[11]["encounter"]["id"]]
+    people = {None: None, first["id"]: "first", second["id"]: "second"}
+    encounters = {None: None, encounter_ids[0]: "first", encounter_ids[1]: "second"}
+
+    observed = [
+        (
+            people[view["encounter"]["visitor_id"]],
+            encounters[view["encounter"]["id"]],
+            view["encounter"]["state"],
+            view["encounter"]["reason"],
+            view["encounter"]["learning_available"],
+        )
+        for view in views
+    ]
+    assert observed == [
+        (None, None, "identifying", "initial_candidate", False),
+        (None, None, "identifying", "initial_candidate", False),
+        ("first", "first", "confirmed", "direct_confirmation", True),
+        ("first", "first", "absent", "absence_allowance", True),
+        ("first", "first", "paused", "multiple_faces", False),
+        ("first", "first", "paused", "new_candidate", False),
+        ("first", "first", "paused", "new_candidate", False),
+        ("first", "first", "paused", "new_candidate", False),
+        ("first", "first", "confirmed", "direct_confirmation", True),
+        ("first", "first", "paused", "new_candidate", False),
+        ("first", "first", "paused", "new_candidate", False),
+        ("second", "second", "confirmed", "direct_confirmation", True),
+        ("second", "second", "absent", "absence_allowance", True),
+        ("second", "second", "absent", "absence_allowance", True),
+        (None, None, "identifying", "no_visitor", False),
+    ]
+    assert [view["candidate"]["confirmed"] if view["candidate"] else None for view in views] == [
+        False,
+        False,
+        True,
+        None,
+        None,
+        None,
+        False,
+        False,
+        True,
+        False,
+        False,
+        True,
+        None,
+        None,
+        None,
+    ]
+    snapshot = await session.snapshot(0, 6100)
+    timeline = snapshot["timeline"]
+    assert [point["ms"] for point in timeline] == [stamp for stamp, _ in events]
+    assert [point["reason"] for point in timeline] == [
+        "initial_candidate_backfill",
+        "initial_candidate_backfill",
+        "direct_confirmation",
+        "absence_allowance",
+        "multiple_faces",
+        "new_candidate",
+        "new_candidate",
+        "new_candidate",
+        "direct_confirmation",
+        "new_candidate",
+        "new_candidate",
+        "direct_confirmation",
+        "absence_allowance",
+        "absence_allowance",
+        "no_visitor",
+    ]
+    assert [point["eligible"] for point in timeline] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert [people[point["visitor_id"]] for point in timeline] == [
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "first",
+        "second",
+        "second",
+        "second",
+        None,
+    ]
+    assert [point["eligible_until"] for point in timeline] == [
+        500,
+        600,
+        5200,
+        5200,
+        5200,
+        5200,
+        5200,
+        5200,
+        5800,
+        5800,
+        5800,
+        6100,
+        6100,
+        6100,
+        6600,
+    ]
+    assert [(point["voice_version"], point["person_version"]) for point in timeline] == [
+        *[(0, 1)] * 14,
+        (0, None),
+    ]
+    first_encounter = await store.get_encounter(encounter_ids[0])
+    second_encounter = await store.get_encounter(encounter_ids[1])
+    assert (first_encounter["start_ms"], first_encounter["end_ms"]) == (0, 1100)
+    assert (second_encounter["start_ms"], second_encounter["end_ms"]) == (1100, 6100)
+
+
+async def test_conflicting_gallery_identity_stays_paused_until_reconfirmed(store, captures):
+    first = await store.enroll_person(b"first", [face()["embedding"]])
+    session = LiveSession("conflict", store, Settings(), captures)
+    for stamp in (0, 100, 200):
+        await session.observe([face()], stamp)
+    await store.enroll_person(b"duplicate", [face()["embedding"]])
+    conflict = await session.observe([face()], 300)
+    assert conflict["encounter"]["visitor_id"] == first["id"]
+    assert conflict["encounter"]["reason"] == "identity_conflict"
+    assert not conflict["encounter"]["learning_available"]
+    absent = await session.observe([], 400)
+    assert absent["encounter"]["reason"] == "new_candidate"
+    assert not absent["encounter"]["learning_available"]

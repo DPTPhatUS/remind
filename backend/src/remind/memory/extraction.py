@@ -5,8 +5,8 @@ source, speaker-role and write-scope checks without restricting natural English 
 specific introductions or sentence patterns.
 """
 
-from collections.abc import Collection, Sequence
-from typing import Literal
+from collections.abc import Collection, Mapping, Sequence
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -104,7 +104,7 @@ def normalize(value: str) -> str:
 
 def validate_extraction(
     result: Record,
-    segments: Sequence[Record],
+    segments: Sequence[Mapping[str, Any]],
     verification: Record,
     existing_facts: Sequence[Record] = (),
     current_ids: Collection[str] | None = None,

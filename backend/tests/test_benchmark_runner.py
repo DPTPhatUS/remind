@@ -144,3 +144,133 @@ def test_readable_video_report_explains_unmeasured_processing(tmp_path):
     assert "Queued audio jobs | 0" in summary
     assert "extraction correctness were not measured" in summary
     assert "Execution status describes completion, not model accuracy" in summary
+
+
+@pytest.mark.parametrize("kind", ["audio", "conversation", "face", "video"])
+def test_report_artifacts_preserve_each_paths_measurements(tmp_path, kind):
+    from remind.benchmark.report import write_report
+
+    def ratio(numerator, denominator):
+        return {
+            "numerator": numerator,
+            "denominator": denominator,
+            "rate": numerator / denominator if denominator else None,
+        }
+
+    scores = {}
+    rows = []
+    if kind in {"audio", "video"}:
+        scores["roles"] = {
+            "role_accuracy": ratio(2, 4),
+            "decision_coverage": ratio(3, 4),
+            "wrong_role_ms": 1,
+            "uncertain_ms": 0.5,
+            "missed_ms": 0.5,
+        }
+        rows += [
+            "| Role correctness (labelled duration) | 2.0/4.0 (50.0%) |",
+            "| Decisive role coverage | 3.0/4.0 (75.0%) |",
+            "| Confident role errors | 1.0 ms |",
+            "| Uncertain speech | 0.5 ms |",
+            "| Missed speech | 0.5 ms |",
+        ]
+    if kind in {"face", "video"}:
+        scores["identity"] = {
+            "face_count_accuracy": ratio(3, 4),
+            "frame_accuracy": ratio(2, 4),
+            "missed_associations": 1,
+        }
+        rows += [
+            "| Face count | 3.0/4.0 (75.0%) |",
+            "| Face association | 2.0/4.0 (50.0%) |",
+            "| Missed face associations | 1 |",
+        ]
+    if kind in {"conversation", "video"}:
+        scores["memory"] = {
+            "fact_coverage": ratio(1, 2),
+            "raw_exact_precision": ratio(1, 3),
+            "required_absence": ratio(1, 1),
+            "historical_state_coverage": ratio(0, 0),
+            "wrong_subject_additions": [{"id": "wrong-subject"}],
+            "unmatched_additions_require_review": [{"id": "review"}],
+            "missing_expected": [
+                {"subject": "visitor", "predicate": "occupation", "value": "teacher"}
+            ],
+        }
+        rows += [
+            "| Useful fact coverage | 1.0/2.0 (50.0%) |",
+            "| Raw exact matching | 1.0/3.0 (33.3%) |",
+            "| Required absence checks | 1.0/1.0 (100.0%) |",
+            "| Historical state coverage | Not measured |",
+            "| Wrong subjects | 1 |",
+            "| Unmatched additions needing review | 1 |",
+        ]
+    outcome = {"id": "meeting", "scores": scores}
+    if kind == "video":
+        scores["latency"] = {"speech_to_saved": {"count": 1, "p50_ms": 1200, "p95_ms": 1200}}
+        outcome.update(
+            segments=[{"id": "saved"}, {"id": "unattributed"}],
+            unattributed_turns=1,
+            association={"direct_confirmation": 1, "multiple_faces": 1},
+        )
+        rows.append("| Speech to saved fact (1 measurements) | p50 1200.0 ms; p95 1200.0 ms |")
+    if kind in {"face", "video"}:
+        outcome["transport"] = {
+            "frames_sent": 10,
+            "frames_skipped_late": 1,
+            "uploads": [{"receipt": {"clip_id": "clip"}}] if kind == "video" else [],
+        }
+        rows += ["| Frames sent | 10 |", "| Frames skipped late | 1 |"]
+    if kind == "video":
+        rows += [
+            "| Queued audio jobs | 1 |",
+            "| Unattributed turns | 1 |",
+            "| Transcribed turns | 2 |",
+            "| Association: direct_confirmation | 1 |",
+            "| Association: multiple_faces | 1 |",
+        ]
+    if kind in {"conversation", "video"}:
+        rows += ["", "- Missed expected fact: visitor / occupation / teacher"]
+    result = {
+        "kind": kind,
+        "title": "Frozen fixture",
+        "status": "complete",
+        "annotation_notes": "Reviewed fixture labels",
+        "limitations": ["Fixture execution does not establish model accuracy."],
+        "cases": [{"id": "case", "status": "complete", "errors": [], "outcomes": [outcome]}],
+    }
+
+    write_report(result, tmp_path)
+
+    assert json.loads((tmp_path / "report.json").read_text()) == result
+    expected = f"""# Remind {kind} benchmark
+
+Execution: complete
+
+Frozen fixture
+
+Execution status describes completion, not model accuracy.
+
+## case
+
+Execution: complete
+
+
+### meeting
+
+| Measurement | Result |
+| --- | --- |
+"""
+    expected += "\n".join(rows)
+    expected += """
+
+## Interpretation
+
+Reviewed fixture labels
+
+- Fixture execution does not establish model accuracy.
+- Unmatched paraphrases require evidence review; exact wording is not a semantic judge.
+- Empty output and small fixture runs cannot establish real-world accuracy.
+- Full raw observations and per-stage timings are in report.json and case artifacts.
+"""
+    assert (tmp_path / "report.md").read_text() == expected

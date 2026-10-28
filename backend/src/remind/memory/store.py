@@ -7,6 +7,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from remind.database import Database, Record, rows
+from remind.memory.cleanup import cancel_clip
+from remind.memory.contracts import TranscriptTurn
 from remind.memory.facts import (
     IDENTITY_FIELDS,
     SINGLE_VALUE_PREDICATES,
@@ -53,17 +55,12 @@ async def save_conversation_result(
         "WHERE id=? AND summary_order<=?",
         (result.get("summary"), order, encounter_id, order),
     )
-    if result.get("metrics") is not None:
-        await db.execute(
-            "INSERT OR REPLACE INTO job_metrics VALUES(?,?)",
-            (job_id, json.dumps(result["metrics"])),
-        )
 
 
 class MemoryStore:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, template_threshold: float = 0.55) -> None:
         self.db = db
-        self.template_threshold = 0.55
+        self.template_threshold = template_threshold
 
     async def create_person(
         self,
@@ -268,30 +265,11 @@ class MemoryStore:
                 (ident,),
             )
             for clip in clips:
-                if clip["path"]:
-                    await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (clip["path"],))
-                await db.execute(
-                    "UPDATE clips SET path=NULL,cancelled=1,timeline='[]' WHERE id=?", (clip["id"],)
-                )
-                await db.execute(
-                    "UPDATE jobs SET status='cancelled',lease_token=NULL,payload='{}' "
-                    "WHERE clip_id=? AND status!='done'",
-                    (clip["id"],),
-                )
+                await cancel_clip(db, clip["id"], clip["path"])
             # Queued audio may not have produced transcripts yet.
             for clip in await rows(db, "SELECT id,path,timeline FROM clips WHERE cancelled=0"):
                 if any(point.get("visitor_id") == ident for point in json.loads(clip["timeline"])):
-                    if clip["path"]:
-                        await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (clip["path"],))
-                    await db.execute(
-                        "UPDATE clips SET cancelled=1,path=NULL,timeline='[]' WHERE id=?",
-                        (clip["id"],),
-                    )
-                    await db.execute(
-                        "UPDATE jobs SET status='cancelled',lease_token=NULL,payload='{}' "
-                        "WHERE clip_id=? AND status!='done'",
-                        (clip["id"],),
-                    )
+                    await cancel_clip(db, clip["id"], clip["path"])
             await db.execute("DELETE FROM people WHERE id=?", (ident,))
         self.db.revision += 1
 
@@ -464,7 +442,7 @@ class MemoryStore:
 
     async def recent_context(
         self, encounter_id: str, limit: int = 40, before_ms: float | None = None
-    ) -> list[Record]:
+    ) -> list[TranscriptTurn]:
         async with self.db.transaction() as db:
             segments = await rows(
                 db,

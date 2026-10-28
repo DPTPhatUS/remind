@@ -196,11 +196,11 @@ def create_app(
 
     @app.get("/api/jobs")
     async def jobs():
-        return await runtime.captures.pending_jobs()
+        return await runtime.jobs.pending()
 
     @app.post("/api/jobs/{ident}/retry")
     async def retry_job(ident: str):
-        if not await runtime.captures.retry_job(ident):
+        if not await runtime.jobs.retry(ident):
             raise HTTPException(409, "Only failed, retained jobs can be retried")
         return {"status": "pending"}
 
@@ -212,7 +212,7 @@ def create_app(
             raise HTTPException(409, "Another tab is using the camera session. Stop it first.")
         generation = str(uuid4())
         await store.start_session(generation)
-        runtime.session = LiveSession(generation, store, settings)
+        runtime.session = LiveSession(generation, store, settings, runtime.captures)
         voice = await runtime.voice_status()
         return {
             "generation": generation,
@@ -225,7 +225,7 @@ def create_app(
     async def stop(generation: str):
         if runtime.session and runtime.session.generation == generation:
             await runtime.session.stop()
-        return {"pending_jobs": len(await runtime.captures.pending_jobs())}
+        return {"pending_jobs": len(await runtime.jobs.pending())}
 
     @app.post("/api/live/{generation}/clips")
     async def clip(generation: str, request: Request):

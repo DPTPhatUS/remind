@@ -8,7 +8,9 @@ import numpy as np
 
 from remind.config import Settings
 from remind.database import Record
+from remind.memory.association import slice_timeline
 from remind.memory.capture import CaptureStore
+from remind.memory.contracts import TimelinePoint
 from remind.memory.store import MemoryStore, now
 from remind.vision.candidate import Candidate
 from remind.vision.gallery import FaceGallery
@@ -16,12 +18,13 @@ from remind.vision.types import FaceObservation
 
 
 class LiveSession:
-    def __init__(self, generation: str, store: MemoryStore, settings: Settings):
+    def __init__(
+        self, generation: str, store: MemoryStore, settings: Settings, captures: CaptureStore
+    ):
         self.generation = generation
         self.store = store
         self.settings = settings
-        self.captures = CaptureStore(store, settings.attribution_wait_seconds)
-        self.store.template_threshold = settings.match_threshold
+        self.captures = captures
         self.candidate: Candidate | None = None
         self.candidate_versions: dict[str, int] = {}
         self.initial_candidate = False
@@ -35,7 +38,7 @@ class LiveSession:
         self.last_capture_ms = float("-inf")
         self.last_observed = time.monotonic()
         self.last_heartbeat = time.monotonic()
-        self.timeline: list[Record] = []
+        self.timeline: list[TimelinePoint] = []
         self.stopped = False
         self.forgotten = False
         self.lock = asyncio.Lock()
@@ -145,11 +148,13 @@ class LiveSession:
                         and point["reason"] == "initial_candidate"
                     ):
                         point.update(
-                            eligible=True,
-                            encounter_id=self.encounter,
-                            visitor_id=person_id,
-                            person_version=version,
-                            reason="initial_candidate_backfill",
+                            {
+                                "eligible": True,
+                                "encounter_id": self.encounter,
+                                "visitor_id": person_id,
+                                "person_version": version,
+                                "reason": "initial_candidate_backfill",
+                            }
                         )
             self.had_encounter = True
         self.visitor_version = person["version"]
@@ -194,35 +199,13 @@ class LiveSession:
                     confirmed, conflict = await self._recognize(self.candidate, capture_ms)
                 if confirmed:
                     await self._confirm(confirmed, capture_ms)
-            self.eligible = False
-            if len(observations) > 1:
-                self.reason = "multiple_faces"
-            elif conflict:
-                self.reason = "identity_conflict"
-            elif confirmed and self.visitor_id == confirmed:
-                self.reason = "direct_confirmation"
-                self.eligible = True
-            elif (
-                self.visitor_id
-                and (
-                    not observations
-                    or (
-                        continuous
-                        and self.candidate
-                        and self.candidate.person_id == self.visitor_id
-                    )
-                )
-                and capture_ms < self.last_presence + self.settings.visitor_absence_ms
-                and self.reason not in ("multiple_faces", "identity_conflict", "new_candidate")
-            ):
-                self.reason = "absence_allowance"
-                self.eligible = True
-            elif self.visitor_id:
-                self.reason = "new_candidate"
-            elif self.candidate and self.initial_candidate:
-                self.reason = "initial_candidate"
-            else:
-                self.reason = "no_visitor"
+            self.reason, self.eligible = self._learning_state(
+                observations,
+                capture_ms,
+                confirmed=confirmed,
+                conflict=conflict,
+                continuous=continuous,
+            )
             voice = await self.store.voice_status()
             self.timeline.append(
                 {
@@ -248,6 +231,57 @@ class LiveSession:
                     self.cards[self.visitor_id] = memory
             return self._view(observations)
 
+    def _learning_state(
+        self,
+        observations: list[FaceObservation],
+        capture_ms: float,
+        *,
+        confirmed: str | None,
+        conflict: bool,
+        continuous: bool,
+    ) -> tuple[str, bool]:
+        if len(observations) > 1:
+            return "multiple_faces", False
+        if conflict:
+            return "identity_conflict", False
+        if confirmed and self.visitor_id == confirmed:
+            return "direct_confirmation", True
+        if (
+            self.visitor_id
+            and (
+                not observations
+                or (continuous and self.candidate and self.candidate.person_id == self.visitor_id)
+            )
+            and capture_ms < self.last_presence + self.settings.visitor_absence_ms
+            # Ambiguity stays paused until the visitor is confirmed again.
+            and self.reason not in ("multiple_faces", "identity_conflict", "new_candidate")
+        ):
+            return "absence_allowance", True
+        if self.visitor_id:
+            return "new_candidate", False
+        if self.candidate and self.initial_candidate:
+            return "initial_candidate", False
+        return "no_visitor", False
+
+    def _encounter_view(self) -> Record:
+        if self.reason == "direct_confirmation":
+            state = "confirmed"
+        elif self.reason == "absence_allowance":
+            state = "absent"
+        else:
+            state = "paused" if self.visitor_id else "identifying"
+        return {
+            "id": self.encounter,
+            "visitor_id": self.visitor_id,
+            "state": state,
+            "learning_available": self.eligible,
+            "reason": self.reason,
+            "absence_deadline_ms": self.last_presence + self.settings.visitor_absence_ms
+            if self.visitor_id
+            else None,
+            "memory": self.cards.get(self.visitor_id or ""),
+        }
+
     def _view(self, observations: list[FaceObservation]) -> Record:
         candidate = self.candidate
         return {
@@ -261,31 +295,12 @@ class LiveSession:
             }
             if candidate
             else None,
-            "encounter": {
-                "id": self.encounter,
-                "visitor_id": self.visitor_id,
-                "state": "confirmed"
-                if self.reason == "direct_confirmation"
-                else "absent"
-                if self.reason == "absence_allowance"
-                else "paused"
-                if self.visitor_id
-                else "identifying",
-                "learning_available": self.eligible,
-                "reason": self.reason,
-                "absence_deadline_ms": self.last_presence + self.settings.visitor_absence_ms
-                if self.visitor_id
-                else None,
-                "memory": self.cards.get(self.visitor_id or ""),
-            },
+            "encounter": self._encounter_view(),
         }
 
     async def snapshot(self, start_ms: float, end_ms: float) -> Record:
         async with self.lock:
-            before = [p for p in self.timeline if p["ms"] <= start_ms]
-            timeline = ([before[-1]] if before else []) + [
-                p for p in self.timeline if start_ms < p["ms"] <= end_ms
-            ]
+            timeline = slice_timeline(self.timeline, start_ms, end_ms)
             voice = await self.store.voice_status()
             return {
                 "timeline": copy.deepcopy(timeline),

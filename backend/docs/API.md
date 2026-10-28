@@ -67,8 +67,24 @@ retained with memories. There is no public unattributed-history endpoint.
 and `learning`; a pending attribution item has kind `attribution` and status
 `waiting_for_attribution`. Only failed processing jobs can be retried.
 
+Each processing job has up to three automatic attempts, with a five-second retry
+delay. A running job holds a three-minute lease, renewed every 30 seconds. A
+manual retry resets a failed job's attempt count when its clip is still retained
+and not cancelled. These are application retries; an external provider request
+may be repeated after a crash. No exactly-once provider execution is promised.
+
+Learning is serialized within an encounter and waits for earlier relevant work.
+Restart recovers durable jobs and saved transcripts, and finalizes unresolved
+live attribution without inventing continuity. Claim writes, summary updates,
+job metrics and job completion commit together. Optional commit-duration timing
+is updated afterward and cannot recreate a forgotten job.
+
 The final clip may upload for two minutes after normal Stop until another
 session replaces the capture capability. Forgetting cancels that capability.
+
+Capture timestamps and absence deadlines share the session's source clock.
+Receipt, expiration and lease times use epoch milliseconds internally; encounter
+dates use UTC ISO strings. Processing durations use a performance clock.
 
 ## Vision and encounters
 

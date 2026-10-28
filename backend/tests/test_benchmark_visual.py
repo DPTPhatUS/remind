@@ -141,3 +141,121 @@ def test_visual_failures_remain_explicit(tmp_path, monkeypatch, failure):
     assert result["status"] == "failed"
     assert result["errors"]
     assert len(result["outcomes"]) == 1
+
+
+def test_video_results_keep_roles_associations_evidence_and_stage_scope_separate(
+    tmp_path, monkeypatch
+):
+    setup_backend(monkeypatch)
+    replay = visual.replay_encounter
+    fact = {
+        "id": "name",
+        "person_id": "profile",
+        "subject": "visitor",
+        "predicate": "name",
+        "value": "Anna",
+        "evidence": [{"segment_id": "current", "quote": "Anna"}],
+    }
+    other_fact = {
+        "id": "other-name",
+        "person_id": "other-profile",
+        "subject": "visitor",
+        "predicate": "name",
+        "value": "Bob",
+        "evidence": [],
+    }
+
+    async def observed(*args, **kwargs):
+        result = await replay(*args, **kwargs)
+        result["people"] = [{"facts": [fact]}, {"facts": [other_fact]}]
+        result["fact_observations"] = [
+            {"fact_id": "name", "performance_ms": 1500, "poll_interval_ms": 500}
+        ]
+        return result
+
+    monkeypatch.setattr(visual, "replay_encounter", observed)
+    monkeypatch.setattr(
+        visual,
+        "snapshot",
+        lambda _: {
+            "jobs": [{"id": "job", "clip_id": "clip"}],
+            "transcripts": [
+                {
+                    "clip_id": "old-clip",
+                    "data": {
+                        "id": "earlier",
+                        "role": "user",
+                        "text": "Who are you?",
+                        "start_ms": 0,
+                        "end_ms": 100,
+                    },
+                },
+                {
+                    "clip_id": "clip",
+                    "data": {
+                        "id": "current",
+                        "role": "visitor",
+                        "text": "Anna",
+                        "start_ms": 100,
+                        "end_ms": 1000,
+                        "association": {"status": "attributed", "reason": "absence_allowance"},
+                    },
+                },
+                {
+                    "clip_id": "clip",
+                    "data": {
+                        "id": "unattributed",
+                        "role": "visitor",
+                        "text": "Hello",
+                        "start_ms": 1000,
+                        "end_ms": 2000,
+                        "association": {"status": "unattributed", "reason": "multiple_faces"},
+                    },
+                },
+            ],
+            "job_metrics": [
+                {"job_id": "job", "data": {"decode_ms": 12, "attribution_wait_ms": 30}},
+                {"job_id": "unrelated", "data": {"decode_ms": 999}},
+            ],
+        },
+    )
+    value = encounter()
+    value["turns"] = [
+        {"id": "said", "role": "visitor", "text": "Anna", "start_ms": 100, "end_ms": 1000}
+    ]
+    value["facts"] = [
+        {"id": "expected-name", "subject": "visitor", "predicate": "name", "value": "Anna"}
+    ]
+    case = VideoCase.model_validate({"id": "video", "encounters": [value]})
+
+    result = visual.run_case(case, tmp_path, Settings(data_dir=tmp_path), include_audio=True)
+
+    outcome = result["outcomes"][0]
+    assert result["status"] == "complete"
+    assert outcome["facts"] == [fact]
+    assert outcome["facts_on_other_or_unmapped_profiles"] == [other_fact]
+    assert [s["id"] for s in outcome["segments"]] == ["current", "unattributed"]
+    assert [s["role"] for s in outcome["segments"]] == ["visitor", "visitor"]
+    assert outcome["association"] == {"absence_allowance": 1, "multiple_faces": 1}
+    assert outcome["unattributed_turns"] == 1
+    scores = outcome["scores"]
+    assert scores["roles"]["role_accuracy"] == {"numerator": 900, "denominator": 900, "rate": 1}
+    assert scores["transcription"] == {
+        "errors": 1,
+        "reference_words": 1,
+        "hypothesis_words": 2,
+        "rate": 1,
+    }
+    assert scores["memory"]["evidence"]["resolvable_quotes"]["rate"] == 1
+    assert scores["latency"]["measurements"] == [
+        {"fact_id": "name", "speech_end_ms": 1000, "latency_ms": 500, "poll_uncertainty_ms": 500}
+    ]
+    assert outcome["processing_stages_ms"]["decode_ms"] == {
+        "count": 1,
+        "p50_ms": 12,
+        "p95_ms": 12,
+        "p99_ms": 12,
+        "max_ms": 12,
+    }
+    assert outcome["processing_stages_ms"]["attribution_wait_ms"]["p50_ms"] == 30
+    assert outcome["processing_stages_ms"]["commit_ms"]["count"] == 0

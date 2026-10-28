@@ -16,12 +16,20 @@ Voice setup lets a helper save the user reference. People provides categorized
 facts, evidence, temporal history, optional corrections and forgetting. Live
 reminders show up to three established highlights and the previous encounter.
 
+`features/live/session.ts` owns camera, socket and recorder resources. The
+conversation-jobs hook in `features/live/jobs.ts` owns processing-status polling
+and retries; `features/live/state.ts` contains status text and stale-view decisions.
+Voice enrollment keeps its separate sample-recording lifecycle.
+
 ```bash
 npm test
 npm run build
 npm run lint
 npm run test:e2e
 ```
+
+Use `PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` to run with installed Google
+Chrome when the managed Chromium browser is unavailable.
 
 [Backend contract](../backend/docs/API.md). Playwright starts isolated local
 servers and uses a separate test database. For camera fixtures and setup, see

@@ -5,21 +5,29 @@ from pathlib import Path
 
 from remind.audio.providers import Providers
 from remind.benchmark.inputs import ConversationCase
+from remind.benchmark.report import CaseResult
 from remind.benchmark.scoring import score_memory
 from remind.config import Settings
 from remind.database import Database
 from remind.memory.capture import CaptureStore
+from remind.memory.contracts import TranscriptTurn
+from remind.memory.jobs import JobQueue
 from remind.memory.learning import learn_conversation
 from remind.memory.store import MemoryStore
 
 
-async def run_case(case: ConversationCase, output: Path, settings: Settings) -> dict:
+class ConversationTurn(TranscriptTurn):
+    overlap: bool
+    offscreen: bool
+
+
+async def run_case(case: ConversationCase, output: Path, settings: Settings) -> CaseResult:
     database = Database(output / "data.sqlite3")
     await database.create_schema()
     store = MemoryStore(database)
-    captures = CaptureStore(store)
+    captures = CaptureStore(store, JobQueue(database))
     providers = Providers(settings)
-    result: dict = {"id": case.id, "status": "complete", "outcomes": [], "errors": []}
+    result: CaseResult = {"id": case.id, "status": "complete", "outcomes": [], "errors": []}
     person_id: str | None = None
     current_job_id: str | None = None
     all_segments = []
@@ -35,12 +43,25 @@ async def run_case(case: ConversationCase, output: Path, settings: Settings) -> 
                     (encounter.started_at.isoformat(), eid),
                 )
             for batch in encounter.batches:
+                turns: list[TranscriptTurn] = []
+                for turn in batch.turns:
+                    fixture_turn: ConversationTurn = {
+                        "id": turn.id,
+                        "start_ms": turn.start_ms,
+                        "end_ms": turn.end_ms,
+                        "role": turn.role,
+                        "text": turn.text,
+                        "overlap": turn.overlap,
+                        "offscreen": turn.offscreen,
+                        "speaker": turn.role,
+                    }
+                    turns.append(fixture_turn)
                 job = await captures.receive_transcript_batch(
                     eid,
                     batch.id,
                     batch.start_ms,
                     batch.end_ms,
-                    [{**t.model_dump(), "speaker": t.role} for t in batch.turns],
+                    turns,
                 )
                 job_id = job["id"]
                 current_job_id = job_id

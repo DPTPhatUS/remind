@@ -23,4 +23,4 @@ and forgetting. No video is decoded for voice recognition.
 Startup creates the current schema and recovers unfinished work. Normal restarts
 preserve memories. Older schemas are not supported; there is no migration layer.
 
-[API contract](docs/API.md) · [Attribution and cleanup](docs/ATTRIBUTION.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)
+[API contract](docs/API.md) · [Attribution and cleanup](docs/ATTRIBUTION.md) · [Refactor record](docs/REFACTOR.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)

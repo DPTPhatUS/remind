@@ -4,8 +4,20 @@ import json
 import time
 from collections import defaultdict
 
+import aiosqlite
+
 from remind.database import Record, rows
-from remind.memory.association import associate_turn
+from remind.memory.association import associate_turn, slice_timeline
+from remind.memory.cleanup import cancel_clip
+from remind.memory.contracts import (
+    AudioJob,
+    AudioResult,
+    ClaimedJob,
+    LearningJob,
+    TimelinePoint,
+    TranscriptTurn,
+)
+from remind.memory.jobs import JobQueue
 from remind.memory.store import MemoryStore, now, save_conversation_result, uid
 
 
@@ -14,8 +26,9 @@ def milliseconds() -> int:
 
 
 class CaptureStore:
-    def __init__(self, memory: MemoryStore, attribution_wait_seconds: int = 30):
+    def __init__(self, memory: MemoryStore, jobs: JobQueue, attribution_wait_seconds: int = 30):
         self.memory = memory
+        self.jobs = jobs
         self.db = memory.db
         self.wait_ms = attribution_wait_seconds * 1000
 
@@ -26,7 +39,7 @@ class CaptureStore:
         start_ms: float,
         end_ms: float,
         path: str | None,
-        timeline: list[Record],
+        timeline: list[TimelinePoint],
         voice_version: int | None,
         *,
         input_kind: str = "media",
@@ -82,8 +95,8 @@ class CaptureStore:
         window_key: str,
         start_ms: float,
         end_ms: float,
-        turns: list[Record],
-    ) -> Record:
+        turns: list[TranscriptTurn],
+    ) -> LearningJob:
         """Trusted transcript input for the conversation benchmark; never an HTTP input."""
         encounter = await self.memory.get_encounter(encounter_id)
         if not encounter:
@@ -101,14 +114,14 @@ class CaptureStore:
             None,
             input_kind="conversation",
         )
-        audio_job = await self.claim_job("conversation")
+        audio_job = await self.jobs.claim("conversation")
         if (
             not audio_job
             or audio_job["clip_id"] != receipt["clip_id"]
             or audio_job["kind"] != "audio"
         ):
             raise RuntimeError("Previous transcript work must finish before the next batch")
-        segments = [
+        segments: list[TranscriptTurn] = [
             {
                 **t,
                 "id": f"{audio_job['id']}:{t['id']}",
@@ -127,7 +140,7 @@ class CaptureStore:
         await self.finish_audio(
             audio_job, {"segments": segments, "voice_ready": True, "metrics": {}}
         )
-        job = await self.claim_job("conversation")
+        job = await self.jobs.claim("conversation")
         if not job or job["clip_id"] != receipt["clip_id"] or job["kind"] != "learning":
             raise RuntimeError("Unable to claim transcript learning batch")
         return job
@@ -165,7 +178,7 @@ class CaptureStore:
     async def update_timeline(
         self,
         generation: str,
-        timeline: list[Record],
+        timeline: list[TimelinePoint],
         *,
         final: bool = False,
         cancel_unresolved: bool = False,
@@ -179,24 +192,11 @@ class CaptureStore:
             )
             for clip in clips:
                 if cancel_unresolved:
-                    if clip["path"]:
-                        await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (clip["path"],))
-                    await db.execute(
-                        "UPDATE clips SET cancelled=1,path=NULL,timeline='[]' WHERE id=?",
-                        (clip["id"],),
-                    )
-                    await db.execute(
-                        "UPDATE jobs SET status='cancelled',lease_token=NULL,payload='{}' "
-                        "WHERE clip_id=? AND status!='done'",
-                        (clip["id"],),
-                    )
+                    await cancel_clip(db, clip["id"], clip["path"])
                     continue
                 # Session history may already have been trimmed for a delayed upload.
                 # Preserve the original capture snapshot when no covering history remains.
-                before = [p for p in timeline if p["ms"] <= clip["start_ms"]]
-                points = ([before[-1]] if before else []) + [
-                    p for p in timeline if clip["start_ms"] < p["ms"] <= clip["end_ms"]
-                ]
+                points = slice_timeline(timeline, clip["start_ms"], clip["end_ms"])
                 history = points if points else json.loads(clip["timeline"])
                 expired = stamp >= clip["received_ms"] + self.wait_ms
                 await db.execute(
@@ -204,7 +204,9 @@ class CaptureStore:
                 )
                 await self._resolve(db, clip, history, final=final or expired)
 
-    async def _resolve(self, db, clip: Record, timeline: list[Record], *, final: bool) -> None:
+    async def _resolve(
+        self, db: aiosqlite.Connection, clip: Record, timeline: list[TimelinePoint], *, final: bool
+    ) -> None:
         turns = await rows(db, "SELECT id,data FROM transcripts WHERE clip_id=?", (clip["id"],))
         pending = False
         for row in turns:
@@ -261,7 +263,7 @@ class CaptureStore:
                 (milliseconds(), clip["id"]),
             )
 
-    async def _schedule_learning(self, db, clip: Record) -> None:
+    async def _schedule_learning(self, db: aiosqlite.Connection, clip: Record) -> None:
         groups: dict[str, list[Record]] = defaultdict(list)
         for row in await rows(
             db,
@@ -290,102 +292,13 @@ class CaptureStore:
                 (uid(), clip["id"], eid, json.dumps(payload), now()),
             )
 
-    async def claim_job(self, worker_id: str, stamp: int | None = None) -> Record | None:
-        stamp = milliseconds() if stamp is None else stamp
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE jobs SET status='failed',error='Retry limit reached',"
-                "lease_token=NULL WHERE status='running' AND attempts>=3 AND lease_until<?",
-                (stamp,),
-            )
-            found = await rows(
-                db,
-                "SELECT j.* FROM jobs j JOIN clips c ON c.id=j.clip_id "
-                "WHERE c.cancelled=0 AND j.attempts<3 AND ((j.status='pending' AND j.next_at<=?) "
-                "OR (j.status='running' AND j.lease_until<?)) "
-                "AND (j.kind='audio' OR (NOT EXISTS(SELECT 1 FROM jobs running "
-                "WHERE running.encounter_id=j.encounter_id AND running.id!=j.id "
-                "AND running.status='running' AND running.lease_until>=?) "
-                "AND NOT EXISTS(SELECT 1 FROM clips earlier "
-                "WHERE earlier.generation=c.generation AND earlier.start_ms<c.start_ms "
-                "AND earlier.cancelled=0 "
-                "AND (earlier.audio_done=0 OR earlier.attribution_final=0)) "
-                "AND NOT EXISTS(SELECT 1 FROM jobs e JOIN clips ec ON ec.id=e.clip_id "
-                "WHERE e.encounter_id=j.encounter_id AND e.id!=j.id "
-                "AND ec.start_ms<c.start_ms AND e.status IN ('pending','running','failed')))) "
-                "ORDER BY c.received_ms,j.created_at,j.rowid LIMIT 1",
-                (stamp, stamp, stamp),
-            )
-            if not found:
-                return None
-            job = found[0]
-            token = worker_id + ":" + uid()
-            await db.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,lease_token=?,"
-                "lease_until=? WHERE id=?",
-                (token, stamp + 180000, job["id"]),
-            )
-            clip = (await rows(db, "SELECT * FROM clips WHERE id=?", (job["clip_id"],)))[0]
-        return {**job, "lease_token": token, "payload": json.loads(job["payload"]), "clip": clip}
-
-    async def renew_lease(self, ident: str, token: str, stamp: int) -> bool:
-        async with self.db.transaction() as db:
-            result = await db.execute(
-                "UPDATE jobs SET lease_until=? WHERE id=? AND lease_token=? AND status='running'",
-                (stamp + 180000, ident, token),
-            )
-            return result.rowcount == 1
-
-    async def fail_job(self, ident: str, token: str, error: str, stamp: int) -> None:
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,"
-                "error=?,next_at=?,lease_token=NULL WHERE id=? AND lease_token=? "
-                "AND status='running'",
-                (error[:240], stamp + 5000, ident, token),
-            )
-
-    async def retry_job(self, ident: str) -> bool:
-        async with self.db.transaction() as db:
-            result = await db.execute(
-                "UPDATE jobs SET status='pending',attempts=0,next_at=0,error=NULL "
-                "WHERE id=? AND status='failed' "
-                "AND clip_id IN (SELECT id FROM clips WHERE cancelled=0)",
-                (ident,),
-            )
-            return result.rowcount == 1
-
-    async def pending_jobs(self) -> list[Record]:
-        async with self.db.transaction() as db:
-            jobs = await rows(
-                db,
-                "SELECT id,clip_id,kind,status,attempts,error FROM jobs "
-                "WHERE status IN ('pending','running','failed') ORDER BY created_at",
-            )
-            waiting = await rows(
-                db,
-                "SELECT id AS clip_id FROM clips WHERE audio_done=1 "
-                "AND attribution_final=0 AND cancelled=0",
-            )
-        return jobs + [
-            {
-                "id": r["clip_id"],
-                **r,
-                "kind": "attribution",
-                "status": "waiting_for_attribution",
-                "attempts": 0,
-                "error": None,
-            }
-            for r in waiting
-        ]
-
-    async def finish_audio(self, job: Record, audio: Record) -> bool:
+    async def finish_audio(self, job: AudioJob, audio: AudioResult) -> bool:
         async with self.db.transaction() as db:
             if not await self._owns_job(db, job):
                 return False
             clip = (await rows(db, "SELECT * FROM clips WHERE id=?", (job["clip_id"],)))[0]
             for source in audio["segments"]:
-                turn = {
+                turn: TranscriptTurn = {
                     **source,
                     "start_ms": source["start_ms"] + clip["start_ms"],
                     "end_ms": source["end_ms"] + clip["start_ms"],
@@ -424,7 +337,7 @@ class CaptureStore:
             await self._done(db, job, audio["metrics"])
         return True
 
-    async def learning_segments(self, job: Record) -> list[Record]:
+    async def learning_segments(self, job: LearningJob) -> list[TranscriptTurn]:
         async with self.db.transaction() as db:
             found = await rows(
                 db,
@@ -435,7 +348,7 @@ class CaptureStore:
         wanted = set(job["payload"]["segment_ids"])
         return [json.loads(r["data"]) for r in found if r["id"] in wanted]
 
-    async def finish_learning(self, job: Record, result: Record) -> bool:
+    async def finish_learning(self, job: LearningJob, result: Record) -> bool:
         started = time.perf_counter()
         async with self.db.transaction() as db:
             if not await self._owns_job(db, job):
@@ -481,7 +394,7 @@ class CaptureStore:
         self.db.revision += 1
         return True
 
-    async def _owns_job(self, db, job: Record) -> bool:
+    async def _owns_job(self, db: aiosqlite.Connection, job: ClaimedJob) -> bool:
         return bool(
             await rows(
                 db,
@@ -491,7 +404,7 @@ class CaptureStore:
             )
         )
 
-    async def _done(self, db, job: Record, metrics: Record) -> None:
+    async def _done(self, db: aiosqlite.Connection, job: ClaimedJob, metrics: Record) -> None:
         await db.execute(
             "INSERT OR REPLACE INTO job_metrics VALUES(?,?)", (job["id"], json.dumps(metrics))
         )

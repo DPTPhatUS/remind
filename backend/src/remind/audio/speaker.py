@@ -16,6 +16,7 @@ from numpy.typing import NDArray
 
 from remind.audio.media import PCM, SAMPLE_RATE, VAD_FRAME_SAMPLES
 from remind.config import Settings
+from remind.memory.contracts import TranscriptTurn, VoiceRole
 from remind.vision.models import ModelRegistry
 
 MODEL = "speechbrain/spkrec-ecapa-voxceleb@0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
@@ -142,10 +143,10 @@ class UserVoiceVerifier:
     def classify(
         self,
         pcm: PCM,
-        segments: Sequence[dict[str, Any]],
+        segments: Sequence[TranscriptTurn],
         profile: Mapping[str, Any] | None,
-    ) -> list[dict[str, Any]]:
-        result = [{**segment, "role": "uncertain"} for segment in segments]
+    ) -> list[TranscriptTurn]:
+        result: list[TranscriptTurn] = [{**segment, "role": "uncertain"} for segment in segments]
         references = self._references(profile)
         if references is None:
             return result
@@ -198,11 +199,11 @@ class UserVoiceVerifier:
             voice = np.concatenate([chunk for _, chunk, _ in chunks])[: SAMPLE_RATE * 20]
             embedding = self._embedding(voice)
             score = float(np.median(references @ embedding))
-            role = "uncertain"
+            role: VoiceRole = "uncertain"
             if score >= self.settings.voice_user_threshold:
                 role = "user"
             elif score <= self.settings.voice_visitor_threshold:
                 role = "visitor"
             for index, _, _ in chunks:
-                result[index].update(role=role, voice_score=score)
+                result[index].update({"role": role, "voice_score": score})
         return result

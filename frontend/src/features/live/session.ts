@@ -9,10 +9,11 @@ import type {
 import { captureFrames } from "./capture";
 import { recordClips } from "./audio";
 import { acceptResult } from "./protocol";
+import { useConversationJobs } from "./jobs";
+import { pauseStaleView } from "./state";
 
 type ClipRecorder = ReturnType<typeof recordClips>;
 type SessionState = "idle" | "starting" | "live" | "saving";
-type Job = { id: string; status: string };
 type VisionResponse = VisionMessage | { type: "error"; message: string };
 
 type Resources = {
@@ -30,8 +31,6 @@ export function useLiveSession() {
   const [voiceReady, setVoiceReady] = useState<boolean | null>(null);
   const [uploadPaused, setUploadPaused] = useState(false);
   const retainedClips = useRef<ClipRecorder | null>(null);
-  const [jobsStatus, setJobsStatus] = useState("");
-  const [hasFailedJobs, setHasFailedJobs] = useState(false);
   const [view, setView] = useState<LiveView | null>(null);
   const [diagnostics, setDiagnostics] = useState({
     fps: 0,
@@ -193,68 +192,17 @@ export function useLiveSession() {
           );
         }
       });
-    let poll = 0;
-    async function pollJobs() {
-      try {
-        const jobs = await api<Job[]>("/jobs");
-        if (!active) return;
-        const failed = jobs.filter((job) => job.status === "failed").length;
-        setHasFailedJobs(failed > 0);
-        const waiting = jobs.filter((job) => job.status === "waiting_for_attribution").length;
-        setJobsStatus(
-          failed
-            ? `${failed} conversation clip(s) could not be processed. Check your connection or service setup, then retry.`
-            : waiting
-              ? "Conversation transcribed; waiting to identify the visitor."
-              : jobs.length
-              ? `${jobs.length} conversation clip(s) processing.`
-              : "",
-        );
-      } catch {
-        if (active) {
-          setJobsStatus(
-            "Conversation processing status is unavailable. Check the server connection.",
-          );
-        }
-      } finally {
-        if (active) {
-          poll = window.setTimeout(() => void pollJobs(), 3000);
-        }
-      }
-    }
-    void pollJobs();
+    return () => { active = false; };
+  }, []);
+  const { jobsStatus, hasFailedJobs, retryJobs } = useConversationJobs(setError);
+  useEffect(() => {
     const timer = window.setInterval(() => {
       const now = performance.now();
       if (now - lastResult.current > 500) {
-        setView((current) => {
-          if (!current) return current;
-          const expired =
-            current.encounter.absence_deadline_ms !== null &&
-            now >= current.encounter.absence_deadline_ms;
-          if (
-            !current.detections.length &&
-            current.encounter.reason === "stale_observations" &&
-            (!expired || !current.encounter.memory)
-          ) return current;
-          return {
-            detections: [],
-            candidate: null,
-            encounter: {
-              ...current.encounter,
-              state: "paused",
-              learning_available: false,
-              reason: "stale_observations",
-              memory: expired ? null : current.encounter.memory,
-              visitor_id: expired ? null : current.encounter.visitor_id,
-              id: expired ? null : current.encounter.id,
-            },
-          };
-        });
+        setView((current) => pauseStaleView(current, now));
       }
     }, 250);
     return () => {
-      active = false;
-      clearTimeout(poll);
       clearInterval(timer);
       void stop();
     };
@@ -264,16 +212,6 @@ export function useLiveSession() {
   }, []);
   const retryUpload = () => retainedClips.current?.retry();
   const downloadClip = () => retainedClips.current?.download();
-  const retryJobs = async () => {
-    try {
-      const jobs = await api<Job[]>("/jobs");
-      for (const job of jobs.filter((j) => j.status === "failed"))
-        await api(`/jobs/${job.id}/retry`, { method: "POST" });
-      setJobsStatus("Retrying failed conversations.");
-    } catch (error) {
-      setError(String(error));
-    }
-  };
   return {
     attachVideo,
     status,

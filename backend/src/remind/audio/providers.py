@@ -1,7 +1,7 @@
 """Cloud speech/text boundary; speaker identity and storage remain local."""
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, cast
 
 from openai import AsyncOpenAI
@@ -9,6 +9,7 @@ from openai.types.audio import TranscriptionDiarized
 
 from remind.audio.media import PCM, wav_bytes
 from remind.config import Settings
+from remind.memory.contracts import RawTranscriptTurn
 from remind.memory.extraction import ExtractionResult, VerificationResult
 
 EXTRACTION_INSTRUCTIONS = """Extract supported conversational memories for a one-on-one encounter.
@@ -116,7 +117,7 @@ class Providers:
         self.settings = settings
         self.client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=30, max_retries=0)
 
-    async def transcribe(self, pcm: PCM) -> list[dict[str, Any]]:
+    async def transcribe(self, pcm: PCM) -> list[RawTranscriptTurn]:
         result = await self.client.audio.transcriptions.create(
             model=self.settings.openai_transcribe_model,
             file=("conversation.wav", wav_bytes(pcm), "audio/wav"),
@@ -127,7 +128,7 @@ class Providers:
         )
         # The SDK overload does not narrow non-streaming diarized responses.
         data = cast(TranscriptionDiarized, result).model_dump()
-        segments = []
+        segments: list[RawTranscriptTurn] = []
         for index, source in enumerate(data.get("segments", [])):
             speaker = source.get("speaker")
             segments.append(
@@ -143,7 +144,7 @@ class Providers:
 
     async def extract(
         self,
-        segments: Sequence[dict[str, Any]],
+        segments: Sequence[Mapping[str, Any]],
         previous_summary: str = "",
         existing_facts: Iterable[dict[str, Any]] = (),
         encounter_time: str = "",
@@ -170,7 +171,7 @@ class Providers:
     async def verify(
         self,
         facts: Sequence[dict[str, Any]],
-        segments: Sequence[dict[str, Any]],
+        segments: Sequence[Mapping[str, Any]],
         existing_facts: Iterable[dict[str, Any]] = (),
     ) -> dict[str, Any]:
         if not facts:

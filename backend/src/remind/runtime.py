@@ -12,6 +12,7 @@ from remind.config import Settings
 from remind.database import Database
 from remind.live.session import LiveSession
 from remind.memory.capture import CaptureStore
+from remind.memory.jobs import JobQueue
 from remind.memory.store import MemoryStore
 from remind.memory.worker import MemoryWorker
 from remind.vision.engine import OpenCVVision
@@ -31,11 +32,14 @@ class Runtime:
     def __init__(self, settings: Settings, verifier: UserVoiceVerifier | None = None):
         self.settings = settings
         self.database = Database(settings.data_dir / "remind.sqlite3")
-        self.store = MemoryStore(self.database)
-        self.captures = CaptureStore(self.store, settings.attribution_wait_seconds)
+        self.store = MemoryStore(self.database, template_threshold=settings.match_threshold)
+        self.jobs = JobQueue(self.database)
+        self.captures = CaptureStore(self.store, self.jobs, settings.attribution_wait_seconds)
         self.registry = ModelRegistry(settings.data_dir / "models")
         self.verifier = verifier or UserVoiceVerifier(settings, self.registry)
-        self.worker = MemoryWorker(self.store, settings, self.registry, verifier=self.verifier)
+        self.worker = MemoryWorker(
+            self.store, settings, self.registry, self.captures, verifier=self.verifier
+        )
         self.vision_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
         self.vision: OpenCVVision | None = None
         self.vision_error: str | None = "Not started"

@@ -53,9 +53,15 @@ def main() -> None:
     else:
         from remind.benchmark.runner import run
 
-        result = run(args.path, args.manifest, args.output, getattr(args, "cloud", False), settings)
-        print(json.dumps({"status": result["status"], "report": str(args.output / "report.md")}))
-        if result["status"] != "complete":
+        benchmark_result = run(
+            args.path, args.manifest, args.output, getattr(args, "cloud", False), settings
+        )
+        print(
+            json.dumps(
+                {"status": benchmark_result["status"], "report": str(args.output / "report.md")}
+            )
+        )
+        if benchmark_result["status"] != "complete":
             raise SystemExit(1)
 
 

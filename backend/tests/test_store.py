@@ -1,6 +1,7 @@
 import pytest
 
 from remind.memory.capture import CaptureStore
+from remind.memory.jobs import JobQueue
 from remind.memory.store import MemoryStore, uid
 
 
@@ -20,7 +21,7 @@ def claim(value, predicate="interest", category="interests", **fields):
 
 
 async def commit_claims(store, person, encounter, claims, capture_start=None):
-    captures = CaptureStore(store)
+    captures = CaptureStore(store, JobQueue(store.db))
     if capture_start is None:
         context = await store.recent_context(encounter)
         capture_start = max((s.get("end_ms", 0) for s in context), default=-1000) + 1000

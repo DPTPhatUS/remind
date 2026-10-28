@@ -6,14 +6,13 @@ from pathlib import Path
 from remind.benchmark.backend import enroll_voice, isolated_backend, snapshot
 from remind.benchmark.inputs import FaceCase, VideoCase, VideoEncounter
 from remind.benchmark.media import AudioClip, inspect_video, prepare_enrollment, prepare_media
-from remind.benchmark.report import write_json
+from remind.benchmark.report import CaseResult, write_json
 from remind.benchmark.scoring import (
     percentiles,
     score_identity,
     score_latency,
     score_memory,
-    score_roles,
-    word_error_rate,
+    score_transcript,
 )
 from remind.benchmark.transport import replay_encounter
 from remind.config import Settings
@@ -21,7 +20,7 @@ from remind.config import Settings
 
 def run_case(
     case: FaceCase | VideoCase, output: Path, settings: Settings, *, include_audio: bool
-) -> dict:
+) -> CaseResult:
     prepared: list[tuple[Path, list[AudioClip]]] = []
     for index, encounter in enumerate(case.encounters):
         directory = output / f"encounter-{index + 1}"
@@ -39,7 +38,7 @@ def run_case(
     paths = [output / f"enrollment-{i + 1}.wav" for i in range(len(samples))]
     for sample, path in zip(samples, paths, strict=True):
         prepare_enrollment(sample, path)
-    result: dict = {"id": case.id, "status": "complete", "outcomes": [], "errors": []}
+    result: CaseResult = {"id": case.id, "status": "complete", "outcomes": [], "errors": []}
     mapping: dict[str, str] = {}
     with isolated_backend(settings, output, cloud=include_audio) as (url, database_path, health):
         result["health"] = health
@@ -90,14 +89,8 @@ def run_case(
                 )
                 scores.update(
                     {
-                        "roles": score_roles(
+                        **score_transcript(
                             expected, current if actual["alignment_valid"] else []
-                        ),
-                        "transcription": word_error_rate(
-                            " ".join(t["text"] for t in expected),
-                            " ".join(s["text"] for s in current)
-                            if actual["alignment_valid"]
-                            else "",
                         ),
                         "memory": score_memory(
                             [f.model_dump() for f in encounter.facts], facts, segments
