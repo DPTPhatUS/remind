@@ -4,10 +4,10 @@ import io
 import numpy as np
 import pytest
 
+from remind.vision.candidate import Candidate
 from remind.vision.gallery import FaceGallery
 from remind.vision.models import MANIFEST, ModelRegistry
 from remind.vision.quality import usable_face
-from remind.vision.tracking import Tracker
 
 
 def vector(index=0):
@@ -31,15 +31,27 @@ def test_gallery_margin_is_between_people_not_templates():
         gallery.match(np.full(128, np.nan))
 
 
-def test_crossing_uses_appearance_and_bad_observations_cannot_enroll():
-    tracker = Tracker()
-    initial = tracker.update([obs(0.1, vector()), obs(0.6, vector(1))], 0)
-    later = tracker.update([obs(0.6, vector()), obs(0.1, vector(1))], 100)
-    assert later[0].id == initial[0].id
-    assert later[1].id == initial[1].id
-    for time in range(200, 2500, 100):
-        tracks = tracker.update([obs(0.6, vector(), False)], time)
-    assert tracks[0].usable_count < 5
+def test_single_candidate_uses_current_appearance_and_expires():
+    candidate = Candidate([0.1, 0.1, 0.2, 0.3], 0, 0)
+    candidate.observe(obs(0.1, vector()), 0)
+    assert candidate.continues(obs(0.2, vector()), 100)
+    assert not candidate.continues(obs(0.1, vector(1)), 100)
+    assert not candidate.continues(obs(0.1, vector()), 501)
+    candidate.person_id = "known"
+    candidate.observe(obs(0.1, None, False), 100)
+    assert candidate.person_id == "known"
+    assert len(candidate.samples) == 1
+
+
+def test_candidate_samples_are_bounded_current_and_consistent():
+    candidate = Candidate([0.1, 0.1, 0.2, 0.3], 0, 0)
+    for stamp in range(0, 9000, 100):
+        candidate.observe(obs(0.1, vector()), stamp)
+    assert len(candidate.samples) == 16
+    assert candidate.samples[0][0] >= 3900
+    assert len(candidate.enrollment_samples(0.55)) == 8
+    candidate.observe(obs(0.1, vector(1)), 9200)
+    assert candidate.enrollment_samples(0.55) == []
 
 
 def test_corrupt_models_are_rejected(tmp_path):

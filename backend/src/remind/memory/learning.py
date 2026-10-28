@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from remind.audio.providers import Providers
 from remind.config import Settings
 from remind.database import Record
+from remind.memory.association import eligible_source
 from remind.memory.extraction import validate_extraction
 from remind.memory.store import MemoryStore
 
@@ -47,7 +48,18 @@ async def learn_conversation(
             stamp = stamp.replace(tzinfo=UTC)
         encounter_time = stamp.astimezone(ZoneInfo(settings.memory_timezone)).isoformat()
     context = await store.recent_context(encounter_id, limit=40, before_ms=start_ms)
-    dialogue = bounded_dialogue(context + segments)
+    # Provider-facing roles cannot turn unassociated speech into visitor evidence.
+    dialogue = bounded_dialogue(
+        [
+            {
+                **s,
+                "role": s["role"]
+                if visitor_id and eligible_source(s, visitor_id, encounter_id)
+                else "uncertain",
+            }
+            for s in context + segments
+        ]
+    )
     current_ids = {segment["id"] for segment in segments}
     facts = (await store.facts_for_person(visitor_id) if visitor_id else [])[:120]
     # A delayed old clip must not use a later summary as its context.
@@ -74,6 +86,8 @@ async def learn_conversation(
         verification,
         facts,
         current_ids=current_ids,
+        visitor_id=visitor_id,
+        encounter_id=encounter_id,
     )
     metrics["verification_ms"] = round((time.perf_counter() - phase) * 1000, 2)
     metrics.update(

@@ -7,15 +7,17 @@ from remind.audio.providers import Providers
 from remind.benchmark.inputs import ConversationCase
 from remind.benchmark.scoring import score_memory
 from remind.config import Settings
-from remind.database import Database, rows
+from remind.database import Database
+from remind.memory.capture import CaptureStore
 from remind.memory.learning import learn_conversation
-from remind.memory.store import MemoryStore, save_conversation_result
+from remind.memory.store import MemoryStore
 
 
 async def run_case(case: ConversationCase, output: Path, settings: Settings) -> dict:
     database = Database(output / "data.sqlite3")
     await database.create_schema()
     store = MemoryStore(database)
+    captures = CaptureStore(store)
     providers = Providers(settings)
     result: dict = {"id": case.id, "status": "complete", "outcomes": [], "errors": []}
     person_id: str | None = None
@@ -26,31 +28,23 @@ async def run_case(case: ConversationCase, output: Path, settings: Settings) -> 
         person = await store.create_person()
         person_id = person["id"]
         for encounter in case.encounters:
-            eid = await store.start_encounter("text-benchmark")
+            eid = await store.start_encounter("text-benchmark", person["id"], 0)
             async with database.transaction() as connection:
                 await connection.execute(
                     "UPDATE encounters SET started_at=? WHERE id=?",
                     (encounter.started_at.isoformat(), eid),
                 )
-            await store.add_participant(eid, person["id"], "supplied-text-visitor", 0)
             for batch in encounter.batches:
-                job_id = await store.enqueue_job(
+                job = await captures.receive_transcript_batch(
                     eid,
                     batch.id,
-                    {
-                        "visitor_id": person["id"],
-                        "start_ms": batch.start_ms,
-                        "end_ms": batch.end_ms,
-                    },
+                    batch.start_ms,
+                    batch.end_ms,
+                    [{**t.model_dump(), "speaker": t.role} for t in batch.turns],
                 )
+                job_id = job["id"]
                 current_job_id = job_id
-                job = await store.claim_job("text-benchmark", int(time.time() * 1000))
-                if job is None or job["id"] != job_id:
-                    raise RuntimeError("Unable to claim the next transcript batch")
-                segments = [
-                    {**turn.model_dump(), "id": f"{job_id}:{turn.id}", "speaker": turn.role}
-                    for turn in batch.turns
-                ]
+                segments = await captures.learning_segments(job)
                 started = time.perf_counter()
                 learned = await learn_conversation(
                     store,
@@ -63,22 +57,14 @@ async def run_case(case: ConversationCase, output: Path, settings: Settings) -> 
                     can_learn=True,
                 )
                 phase = time.perf_counter()
-                async with database.transaction() as connection:
-                    current_person = (
-                        await rows(connection, "SELECT * FROM people WHERE id=?", (person_id,))
-                    )[0]
-                    await save_conversation_result(
-                        connection, eid, job_id, current_person, learned, batch.end_ms
-                    )
-                    await connection.execute(
-                        "UPDATE jobs SET status='done',lease_token=NULL WHERE id=?", (job_id,)
-                    )
+                if not await captures.finish_learning(job, learned):
+                    raise RuntimeError("Transcript batch was invalidated before commit")
                 current_job_id = None
                 learned["metrics"]["commit_ms"] = (time.perf_counter() - phase) * 1000
                 learned["metrics"]["processing_ms"] = (time.perf_counter() - started) * 1000
                 all_segments.extend(segments)
                 batches.append({"encounter_id": encounter.id, "batch_id": batch.id, **learned})
-            await store.close_encounter(eid)
+            await store.close_encounter(eid, encounter.batches[-1].end_ms)
     except Exception as exc:
         result["status"] = "failed"
         result["errors"].append(str(exc))

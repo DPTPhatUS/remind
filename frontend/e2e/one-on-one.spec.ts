@@ -49,6 +49,7 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
     facts: [],
   };
   let session = 0;
+  let faceMode: "visible" | "absent" | "multiple" | "replacement" | "stale" = "visible";
   let learned = false;
   let samplesReceived = 0;
   const fact = (id: string, overrides: Partial<Fact>): Fact => ({
@@ -178,7 +179,7 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
           }),
         ];
       }
-      response = { status: "queued" };
+      response = { clip_id: "fixture-clip", status: "transcribing" };
     } else if (pathname === "/api/jobs") response = [];
     else if (pathname === "/api/people") response = person ? [person] : [];
     else if (pathname.endsWith("/thumbnail")) {
@@ -210,6 +211,7 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
   });
   await page.routeWebSocket("**/api/live/*/vision", (socket) => {
     socket.onMessage((data) => {
+      if (faceMode === "stale") return;
       const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
       const headerLength = bytes.readUInt32BE(0);
       const header = JSON.parse(bytes.subarray(4, 4 + headerLength).toString());
@@ -219,17 +221,23 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
           generation: header.generation,
           sequence: header.sequence,
           capture_ms: header.capture_ms,
-          tracks: person
-            ? [
-                {
-                  track_id: "face-1",
-                  person_id: person.id,
-                  box: [0.3, 0.3, 0.25, 0.4],
-                  state: "known",
-                  memory: person,
-                },
-              ]
-            : [],
+          detections: faceMode === "absent" ? [] : faceMode === "multiple"
+            ? [{ box: [0.3, 0.3, 0.25, 0.4], quality: true }, { box: [0.7, 0.3, 0.2, 0.3], quality: false }]
+            : [{ box: [0.3, 0.3, 0.25, 0.4], quality: true }],
+          candidate: faceMode === "visible" && person ? {
+            id: "candidate-1", person_id: person.id, box: [0.3, 0.3, 0.25, 0.4],
+            confirmed: true, quality: true,
+          } : faceMode === "replacement" ? {
+            id: "candidate-2", person_id: null, box: [0.7, 0.3, 0.2, 0.3],
+            confirmed: false, quality: true,
+          } : null,
+          encounter: {
+            id: person ? "encounter-1" : null, visitor_id: person?.id ?? null,
+            state: faceMode === "absent" ? "absent" : (faceMode === "multiple" || faceMode === "replacement") ? "paused" : "confirmed",
+            learning_available: faceMode !== "multiple" && faceMode !== "replacement", reason: faceMode === "absent" ? "absence_allowance"
+              : faceMode === "multiple" ? "multiple_faces" : faceMode === "replacement" ? "new_candidate" : "direct_confirmation",
+            absence_deadline_ms: header.capture_ms + 5000, memory: person,
+          },
           processing_ms: 10,
           processed_fps: 15,
           dropped: 0,
@@ -279,6 +287,26 @@ test("helper voice setup, automatic learning, return reminder, correction, and f
   await expect(page.locator(".face-card .face-highlights li")).toHaveCount(3);
   await expect(page.locator(".face-card")).not.toContainText("Bank teller");
   await expect(page.locator(".face-card")).not.toContainText("Anne");
+  faceMode = "absent";
+  await expect(page.locator(".face-card")).toContainText("Temporarily out of view");
+  await expect(page.locator(".face-box")).toHaveCount(0);
+  await expect(page.locator(".face-card strong")).toHaveText("Anna");
+  await page.screenshot({ path: "/tmp/remind-absence.png" });
+  faceMode = "multiple";
+  await expect(page.locator(".face-card")).toContainText("Personal details learning is paused");
+  await expect(page.locator(".face-box")).toHaveCount(2);
+  faceMode = "replacement";
+  await expect(page.locator(".face-box")).toHaveCount(1);
+  await expect(page.locator(".face-card")).toContainText("Personal details learning is paused");
+  await expect(page.locator(".face-card")).toHaveCSS("left", "12px");
+  faceMode = "visible";
+  await expect(page.locator(".face-box")).toHaveCount(1);
+  faceMode = "stale";
+  await expect(page.locator(".face-card")).toContainText("Personal details learning is paused");
+  await expect(page.locator(".face-card")).toHaveCount(0, { timeout: 7000 });
+  faceMode = "visible";
+  await expect(page.locator(".face-card strong")).toHaveText("Anna");
+
   await page.getByRole("button", { name: "Stop camera" }).click();
   await expect(
     page.getByRole("button", { name: "Start camera" }),

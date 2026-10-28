@@ -30,3 +30,17 @@ remaining Playwright application suite. The benchmark guide documents commands,
 current inputs and report formats. Physical microphone/camera quality, background
 voices under the one-on-one assumption, broader populations and use by people
 with memory impairments require separate real-device evaluation.
+
+## Current attribution measurements
+
+The video path transcribes before requiring visitor identity. Attribute complete
+turns, including separate visitors within one clip; leave boundary-crossing turns
+unattributed. Record direct confirmation and five-second absence-based attribution
+separately from voice roles. Initial attribution can wait 30 seconds while audio
+processing continues. A face absence and a stale camera stream are distinct.
+Retained unattributed text expires after 24 hours. Model/provider failures,
+attribution losses and unsupported saved facts must remain separate measurements.
+
+The current one-candidate face path replaces multi-face tracking. Multiple detected
+faces suspend learning; recognition does not select the largest face. The
+off-camera replacement-speaker problem remains outside this implementation.

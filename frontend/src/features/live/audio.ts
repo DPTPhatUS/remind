@@ -1,6 +1,6 @@
 import { downloadFile } from "@/lib/download";
 
-type Receipt = { status: string };
+type Receipt = { clip_id: string; status: string };
 class UploadError extends Error {
   retryable: boolean;
   constructor(message: string, retryable: boolean) {
@@ -65,9 +65,9 @@ export function recordClips(
       retained = null;
       onPaused(false);
       onStatus(
-        receipt.status === "queued"
-          ? "Conversation saved for processing."
-          : "No single sustained encounter in this clip.",
+        receipt.status === "waiting_for_attribution"
+          ? "Conversation transcribed; waiting to identify the visitor."
+          : "Conversation received for processing.",
       );
       if (active) begin();
     } catch (error) {

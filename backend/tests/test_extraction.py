@@ -6,7 +6,18 @@ from remind.memory.extraction import validate_extraction
 
 
 def turn(ident, text, role="visitor"):
-    return {"id": ident, "text": text, "role": role, "speaker": "A"}
+    return {
+        "id": ident,
+        "text": text,
+        "role": role,
+        "speaker": "A",
+        "association": {
+            "status": "attributed",
+            "visitor_id": "person",
+            "encounter_id": "encounter",
+            "person_version": 1,
+        },
+    }
 
 
 def fact(value="Anna", **kwargs):
@@ -41,6 +52,8 @@ def accepted(claim, segments, verification=None, **kwargs):
         segments,
         verification if verification is not None else verified(True),
         **kwargs,
+        visitor_id="person",
+        encounter_id="encounter",
     )["facts"]
 
 
@@ -200,6 +213,8 @@ def test_misplaced_core_field_is_rejected_without_discarding_valid_sibling_claim
         [turn("new:1", text)],
         verified(True, True),
         current_ids={"new:1"},
+        visitor_id="person",
+        encounter_id="encounter",
     )
     assert [(claim["predicate"], claim["value"]) for claim in validated["facts"]] == [
         ("name", "Anna"),
@@ -358,3 +373,18 @@ def test_name_and_age_claims_can_still_describe_a_relative(category, predicate, 
         evidence=[{"segment_id": "new:1", "quote": text}],
     )
     assert accepted(claim, [turn("new:1", text)])[0]["subject"] == "brother"
+
+
+@pytest.mark.parametrize(
+    "association",
+    [
+        None,
+        {"status": "pending", "visitor_id": "person", "encounter_id": "encounter"},
+        {"status": "attributed", "visitor_id": "someone_else", "encounter_id": "encounter"},
+        {"status": "attributed", "visitor_id": "person", "encounter_id": "other_encounter"},
+    ],
+)
+def test_voice_role_alone_cannot_authorize_personal_evidence(association):
+    source = turn("new:1", "Everyone calls me Anna.")
+    source["association"] = association or {}
+    assert accepted(fact(), [source]) == []

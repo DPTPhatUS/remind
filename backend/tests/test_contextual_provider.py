@@ -26,6 +26,13 @@ async def test_contextual_extraction_requires_a_separate_verification_pass(provi
         {"id": "clip1:q", "role": "user", "text": "How is your brother's teaching job?"},
         {"id": "clip2:a", "role": "visitor", "text": "He enjoys it, but I work at a bank."},
     ]
+    for segment in segments:
+        segment["association"] = {
+            "status": "attributed",
+            "visitor_id": "person",
+            "encounter_id": "encounter",
+            "person_version": 1,
+        }
     candidates = [
         {
             "subject": subject,
@@ -74,7 +81,14 @@ async def test_contextual_extraction_requires_a_separate_verification_pass(provi
         {"clip2:a"},
     )
     verified = await provider.verify(result["facts"], segments)
-    validated = validate_extraction(result, segments, verified, current_ids={"clip2:a"})
+    validated = validate_extraction(
+        result,
+        segments,
+        verified,
+        current_ids={"clip2:a"},
+        visitor_id="person",
+        encounter_id="encounter",
+    )
     assert [f["value"] for f in validated["facts"]] == ["bank employee"]
     assert parse.await_count == 2
     first, second = [call.kwargs for call in parse.await_args_list]

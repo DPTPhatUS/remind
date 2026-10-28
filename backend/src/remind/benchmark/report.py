@@ -86,15 +86,15 @@ def write_report(result: dict, output: Path) -> None:
             transport = outcome.get("transport")
             if transport is not None:
                 uploads = transport.get("uploads", [])
-                jobs = sum(bool(u.get("receipt", {}).get("job_id")) for u in uploads)
+                jobs = sum(bool(u.get("receipt", {}).get("clip_id")) for u in uploads)
                 lines.append(f"| Frames sent | {transport.get('frames_sent', 0)} |")
                 lines.append(f"| Frames skipped late | {transport.get('frames_skipped_late', 0)} |")
                 if result["kind"] == "video":
                     lines.append(f"| Queued audio jobs | {jobs} |")
-                    lines.append(
-                        f"| Clips without participants | {outcome.get('unassociated_clips', 0)} |"
-                    )
+                    lines.append(f"| Unattributed turns | {outcome.get('unattributed_turns', 0)} |")
                     lines.append(f"| Transcribed turns | {len(outcome.get('segments', []))} |")
+                    for reason, count in outcome.get("association", {}).items():
+                        lines.append(f"| Association: {reason} | {count} |")
                     if uploads and not jobs:
                         lines += [
                             "",

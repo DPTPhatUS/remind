@@ -48,10 +48,20 @@ def setup_backend(monkeypatch, *, profiles=None, pending=False, upload_failure=F
         index = len([c for c in calls if c[0] == "replay"]) - 1
         person = profiles[index] if profiles else "profile"
         return {
-            "faces": [{"source_ms": 100, "tracks": [{"person_id": person}]}],
+            "faces": [
+                {
+                    "source_ms": 100,
+                    "detections": [{}],
+                    "candidate": {**{"person_id": person}, "confirmed": True},
+                }
+            ],
             "uploads": [{"error": "HTTP 503"}]
             if upload_failure
-            else ([{"receipt": {"status": "no_participants"}}] if include_audio else []),
+            else (
+                [{"receipt": {"status": "transcribing", "clip_id": "clip"}}]
+                if include_audio
+                else []
+            ),
             "people": [],
             "remaining_jobs": [{"id": "pending", "status": "running"}] if pending else [],
             "alignment_valid": True,
@@ -103,7 +113,8 @@ def test_video_with_no_face_still_counts_the_missed_fact(tmp_path, monkeypatch):
     assert outcome["scores"]["memory"]["fact_coverage"]["rate"] == 0
     assert outcome["scores"]["roles"]["missed_ms"] == 900
     assert outcome["scores"]["latency"]["speech_to_saved"]["count"] == 0
-    assert outcome["unassociated_clips"] == 1
+    assert outcome["unattributed_turns"] == 0
+    assert outcome["segments"] == []
 
 
 @pytest.mark.parametrize("failure", ["pending", "upload", "enrollment"])

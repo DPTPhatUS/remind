@@ -99,7 +99,7 @@ def snapshot(path: Path) -> dict:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN")
         result = {}
-        for table in ("jobs", "transcripts", "job_metrics"):
+        for table in ("clips", "jobs", "transcripts", "job_metrics"):
             records = [dict(row) for row in connection.execute(f"SELECT * FROM {table}")]
             for row in records:
                 for key in ("data", "payload"):

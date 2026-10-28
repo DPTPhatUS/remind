@@ -104,7 +104,7 @@ async def test_snapshots_omit_face_and_voice_representations(tmp_path):
     await database.create_schema()
     await database.close()
     value = snapshot(path)
-    assert set(value) == {"jobs", "transcripts", "job_metrics"}
+    assert set(value) == {"clips", "jobs", "transcripts", "job_metrics"}
     with pytest.raises(sqlite3.OperationalError):
         snapshot(tmp_path / "missing.sqlite3")
     assert not (tmp_path / "missing.sqlite3").exists()
@@ -128,11 +128,11 @@ def test_readable_video_report_explains_unmeasured_processing(tmp_path):
                     {
                         "id": "meeting",
                         "scores": {},
-                        "unassociated_clips": 1,
+                        "unattributed_turns": 0,
                         "transport": {
                             "frames_sent": 10,
                             "frames_skipped_late": 0,
-                            "uploads": [{"receipt": {"status": "no_participants"}}],
+                            "uploads": [{"error": "HTTP 503"}],
                         },
                     }
                 ],

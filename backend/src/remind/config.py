@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     openai_transcribe_model: str = "gpt-4o-transcribe-diarize"
     match_threshold: float = Field(default=0.55, ge=0, le=1)
     match_margin: float = Field(default=0.08, ge=0, le=1)
+    visitor_absence_ms: int = Field(default=5000, gt=0)
+    attribution_wait_seconds: int = Field(default=30, gt=0)
     enrollment_ms: int = Field(default=2000, gt=0)
     min_observations: int = Field(default=5, ge=1)
     vision_threads: int = Field(default=4, ge=1)
@@ -25,7 +27,6 @@ class Settings(BaseSettings):
     voice_threads: int = Field(default=2, ge=1, le=16)
     memory_timezone: str = "Asia/Ho_Chi_Minh"
     spool_limit_bytes: int = Field(default=1073741824, gt=0)
-    media_retention_seconds: int = Field(default=86400, gt=0)
     origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

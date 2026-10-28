@@ -23,29 +23,44 @@ CREATE TABLE IF NOT EXISTS user_voice (
 INSERT OR IGNORE INTO user_voice(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS templates (
     id TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-    model TEXT NOT NULL, embedding BLOB NOT NULL
+    model TEXT NOT NULL, embedding BLOB NOT NULL, fixed INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS capture_sessions (
+    generation TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT,
+    cancelled INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS encounters (
-    id TEXT PRIMARY KEY, generation TEXT NOT NULL, started_at TEXT NOT NULL,
+    id TEXT PRIMARY KEY, generation TEXT NOT NULL REFERENCES capture_sessions(generation),
+    person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    start_ms REAL NOT NULL, end_ms REAL, started_at TEXT NOT NULL,
     ended_at TEXT, summary TEXT, summary_order REAL NOT NULL DEFAULT -1
 );
-CREATE TABLE IF NOT EXISTS participants (
-    encounter_id TEXT REFERENCES encounters(id) ON DELETE CASCADE,
-    person_id TEXT REFERENCES people(id) ON DELETE CASCADE, track_id TEXT,
-    start_ms REAL NOT NULL, end_ms REAL,
-    PRIMARY KEY(encounter_id,person_id,track_id,start_ms)
+CREATE TABLE IF NOT EXISTS clips (
+    id TEXT PRIMARY KEY, generation TEXT NOT NULL REFERENCES capture_sessions(generation),
+    window_key TEXT NOT NULL, start_ms REAL NOT NULL, end_ms REAL NOT NULL,
+    path TEXT, received_ms INTEGER NOT NULL, expires_ms INTEGER NOT NULL,
+    voice_version INTEGER, voice_ready INTEGER NOT NULL DEFAULT 0,
+    input_kind TEXT NOT NULL DEFAULT 'media', timeline TEXT NOT NULL DEFAULT '[]',
+    attribution_final INTEGER NOT NULL DEFAULT 0,
+    audio_done INTEGER NOT NULL DEFAULT 0, audio_completed_ms INTEGER,
+    attribution_finalized_ms INTEGER, cancelled INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(generation,window_key)
 );
 CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY, encounter_id TEXT REFERENCES encounters(id) ON DELETE CASCADE,
-    window_key TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-    attempts INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_until INTEGER DEFAULT 0,
-    next_at INTEGER DEFAULT 0, error TEXT, created_at TEXT NOT NULL,
-    UNIQUE(encounter_id,window_key)
-);
-CREATE TABLE IF NOT EXISTS transcripts (
-    id TEXT PRIMARY KEY, job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+    id TEXT PRIMARY KEY, clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('audio','learning')),
     encounter_id TEXT REFERENCES encounters(id) ON DELETE CASCADE,
-    start_ms REAL NOT NULL DEFAULT 0, data TEXT NOT NULL
+    payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_until INTEGER DEFAULT 0,
+    next_at INTEGER DEFAULT 0, error TEXT, created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS audio_clip ON jobs(clip_id) WHERE kind='audio';
+CREATE UNIQUE INDEX IF NOT EXISTS learning_clip ON jobs(clip_id,encounter_id) WHERE kind='learning';
+CREATE TABLE IF NOT EXISTS transcripts (
+    id TEXT PRIMARY KEY, clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    encounter_id TEXT REFERENCES encounters(id) ON DELETE CASCADE,
+    start_ms REAL NOT NULL, data TEXT NOT NULL, expires_ms INTEGER
 );
 CREATE TABLE IF NOT EXISTS facts (
     id TEXT PRIMARY KEY, person_id TEXT REFERENCES people(id) ON DELETE CASCADE,
@@ -64,9 +79,7 @@ CREATE TABLE IF NOT EXISTS fact_evidence (
 CREATE TABLE IF NOT EXISTS job_metrics (
     job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, data TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS invalidated_encounters (id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS cleanup (path TEXT PRIMARY KEY);
-CREATE INDEX IF NOT EXISTS participants_person ON participants(person_id,encounter_id);
 CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(status,next_at);
 CREATE INDEX IF NOT EXISTS transcripts_encounter ON transcripts(encounter_id,start_ms);
 CREATE INDEX IF NOT EXISTS facts_person ON facts(person_id,status);

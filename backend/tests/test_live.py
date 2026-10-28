@@ -53,7 +53,7 @@ async def test_queue_keeps_only_latest():
 
 def test_vision_stream_rejects_stale_frames_malformed_packets_and_stopped_sessions():
     session = SimpleNamespace(
-        generation="one", stopped=False, last_heartbeat=0, observe=AsyncMock(return_value=[])
+        generation="one", stopped=False, last_heartbeat=0, observe=AsyncMock(return_value={})
     )
     engine = SimpleNamespace(detect=Mock(return_value=[]))
     app = FastAPI()
@@ -95,147 +95,130 @@ def test_vision_stream_rejects_stale_frames_malformed_packets_and_stopped_sessio
     assert session.last_heartbeat > 0
 
 
-async def test_enroll_return_and_wrong_generation(store):
-    session = LiveSession("one", store, Settings())
-    feature = np.zeros(128, dtype=np.float32)
-    feature[0] = 1
-    observations = [
-        {"box": [0.3, 0.2, 0.3, 0.4], "embedding": feature, "quality": True, "thumbnail": b"x"}
-    ]
-    for t in range(0, 2100, 100):
-        output = await session.observe(observations, t)
-    assert output[0]["person_id"]
-    person_id = output[0]["person_id"]
-    assert len(await store.list_people()) == 1
-    await session.stop()
-    fresh = LiveSession("two", store, Settings())
-    for t in [0, 100, 200]:
-        output = await fresh.observe(observations, t)
-    assert output[0]["person_id"] == person_id
-    assert output[0]["memory"]["last_encounter"]["id"] == session.encounter
-    await fresh.stop()
-
-
-async def test_bad_face_does_not_inherit_identity(store):
-    session = LiveSession("one", store, Settings())
-    v = np.zeros(128, dtype=np.float32)
-    v[0] = 1
-    obs = {"box": [0.3, 0.2, 0.3, 0.4], "embedding": v, "quality": True, "thumbnail": b"x"}
-    for t in range(0, 2100, 100):
-        await session.observe([obs], t)
-    output = await session.observe([{**obs, "quality": False, "embedding": None}], 2200)
-    assert not any(t["person_id"] for t in output)
-    await session.stop()
-
-
-async def test_delayed_clip_retains_original_encounter(store):
-    session = LiveSession("one", store, Settings())
-    feature = np.zeros(128, dtype=np.float32)
-    feature[0] = 1
-    observation = {
-        "box": [0.3, 0.2, 0.3, 0.4],
-        "embedding": feature,
-        "quality": True,
-        "thumbnail": b"x",
-    }
-    for t in range(0, 2100, 100):
-        await session.observe([observation], t)
-    old = session.encounter
-    await session.observe([], 11000)
-    for t in (12000, 12100, 12200):
-        await session.observe([observation], t)
-    assert session.encounter != old
-    snapshot = await session.snapshot(0, 3000)
-    assert snapshot["encounter"] == old
-    await session.stop()
-
-
-def face(index=0):
+def face(index=0, quality=True):
     return {
         "box": [0.3, 0.2, 0.3, 0.4],
-        "embedding": np.eye(128, dtype=np.float32)[index],
-        "quality": True,
+        "embedding": np.eye(128, dtype=np.float32)[index] if quality else None,
+        "quality": quality,
         "thumbnail": b"x",
     }
 
 
-async def test_new_visitor_closes_original_encounter_and_mixed_clip_is_rejected(store):
-    first = await store.create_person(name="Anna")
-    second = await store.create_person(name="Ben")
-    await store.add_template(first["id"], face(0)["embedding"])
-    await store.add_template(second["id"], face(1)["embedding"])
-    session = LiveSession("one", store, Settings())
-    for stamp in (0, 100, 200, 300):
-        await session.observe([face(0)], stamp)
-    original = session.encounter
-    before = await session.snapshot(200, 300)
-    for stamp in (400, 500, 600, 700):
-        await session.observe([face(1)], stamp)
-    assert session.encounter != original
-    assert session.visitor_id == second["id"]
-    assert (await store.person_memory(first["id"]))["last_encounter"]["id"] == original
-    assert await session.snapshot(200, 700) is None
-    assert before["visitor_id"] == first["id"]
-    assert all(t["visitor_id"] == first["id"] for t in before["timeline"])
-    await session.stop()
+async def enroll(session, index=0, start=0):
+    view = None
+    for stamp in range(start, start + 2400, 100):
+        view = await session.observe([face(index)], stamp)
+    assert view["encounter"]["visitor_id"]
+    return view["encounter"]["visitor_id"]
 
 
-async def test_second_unusable_face_suspends_learning_and_timeline_is_immutable(store):
+async def test_enroll_once_and_return_after_restart(store):
     session = LiveSession("one", store, Settings())
-    for stamp in range(0, 2400, 100):
+    person = await enroll(session)
+    for stamp in range(2400, 10000, 100):
         await session.observe([face()], stamp)
-    snapshot = await session.snapshot(2100, 2300)
-    assert all(t["eligible"] for t in snapshot["timeline"])
-    unclear = {**face(1), "embedding": None, "quality": False}
-    await session.observe([face(), unclear], 2400)
-    group = await session.snapshot(2300, 2400)
-    assert group["timeline"][-1]["face_count"] == 2
-    assert group["timeline"][-1]["eligible"] is False
-    # Callers own their snapshot: neither mutation nor future backfill can change it.
-    snapshot["timeline"][0]["eligible"] = False
-    assert (await session.snapshot(2100, 2300))["timeline"][0]["eligible"] is True
-    await session.stop()
-
-
-async def test_memory_commit_refreshes_live_reminder_without_restarting_camera(store):
-    session = LiveSession("one", store, Settings())
-    for stamp in range(0, 2400, 100):
-        tracks = await session.observe([face()], stamp)
-    pid = tracks[0]["person_id"]
-    person = await store.get_person(pid)
-    await store.correct_person(pid, {"name": "Anna"}, person["version"])
-    tracks = await session.observe([face()], 2400)
-    assert tracks[0]["memory"]["name"] == "Anna"
-    assert tracks[0]["memory"]["last_encounter"] is None
-    await session.stop()
-
-
-async def test_forgotten_visitor_cannot_be_bound_to_a_delayed_clip(store):
-    session = LiveSession("one", store, Settings())
-    for stamp in range(0, 2400, 100):
-        tracks = await session.observe([face()], stamp)
-    await store.forget_person(tracks[0]["person_id"])
-    assert await session.snapshot(2100, 2300) is None
-    await session.stop()
-
-
-async def test_gallery_refresh_does_not_hide_a_concurrent_enrollment(store, monkeypatch):
-    read_templates = store.templates
-    visitor = await store.create_person(name="Anna")
-    added = False
-
-    async def read_then_enroll():
-        nonlocal added
-        templates = await read_templates()
-        if not added:
-            added = True
-            await store.add_template(visitor["id"], face()["embedding"])
-        return templates
-
-    monkeypatch.setattr(store, "templates", read_then_enroll)
-    session = LiveSession("one", store, Settings())
-    for stamp in (0, 100, 200, 300):
-        tracks = await session.observe([face()], stamp)
-    assert tracks[0]["person_id"] == visitor["id"]
     assert len(await store.list_people()) == 1
+    assert len(await store.templates()) <= 8
     await session.stop()
+    fresh = LiveSession("two", store, Settings())
+    for stamp in (0, 100, 200):
+        view = await fresh.observe([face()], stamp)
+    assert view["encounter"]["visitor_id"] == person
+    assert view["encounter"]["memory"]["last_encounter"]
+
+
+async def test_absence_allows_five_seconds_but_not_missing_frames(store):
+    from remind.memory.association import associate_turn
+
+    session = LiveSession("one", store, Settings())
+    person = await enroll(session)
+    for stamp in range(2400, 7300, 100):
+        view = await session.observe([], stamp)
+    assert view["encounter"]["visitor_id"] == person
+    assert view["encounter"]["learning_available"]
+    snapshot = await session.snapshot(3000, 4000)
+    turn = {"start_ms": 3000, "end_ms": 4000}
+    assert associate_turn(turn, snapshot["timeline"], final=True)["reason"] == "absence_allowance"
+    stale = await session.snapshot(3000, 8000)
+    assert (
+        associate_turn({"start_ms": 3000, "end_ms": 8000}, stale["timeline"], final=True)["status"]
+        == "unattributed"
+    )
+    view = await session.observe([], 7300)
+    assert not view["encounter"]["visitor_id"]
+    assert not view["encounter"]["learning_available"]
+
+
+async def test_bad_quality_keeps_history_but_does_not_extend_confirmation(store):
+    session = LiveSession("one", store, Settings())
+    person = await enroll(session)
+    for stamp in range(2400, 7300, 100):
+        view = await session.observe([face(quality=False)], stamp)
+    assert view["candidate"]["person_id"] == person
+    assert view["encounter"]["state"] == "absent"
+    view = await session.observe([face(quality=False)], 7300)
+    assert view["encounter"]["visitor_id"] is None
+
+
+async def test_competitor_pauses_immediately_and_switches_before_absence_timeout(store):
+    session = LiveSession("one", store, Settings())
+    first = await enroll(session)
+    other = await store.enroll_person(b"b", [np.eye(128, dtype=np.float32)[1]])
+    old = session.encounter
+    initial = await session.observe([face(1)], 2400)
+    assert not initial["encounter"]["learning_available"]
+    assert initial["encounter"]["visitor_id"] == first
+    for stamp in (2500, 2600):
+        view = await session.observe([face(1)], stamp)
+    assert view["encounter"]["visitor_id"] == other["id"]
+    assert session.encounter != old
+    before = await session.snapshot(2000, 2500)
+    assert before["timeline"][0]["visitor_id"] == first
+
+
+async def test_multiple_faces_barrier_cannot_be_backfilled(store):
+    session = LiveSession("one", store, Settings())
+    await enroll(session)
+    view = await session.observe([face(), face(1, quality=False)], 2400)
+    assert view["candidate"] is None
+    assert view["encounter"]["reason"] == "multiple_faces"
+    assert not view["encounter"]["learning_available"]
+    await session.observe([], 2500)
+    assert session.reason == "new_candidate"
+    for stamp in (2600, 2700, 2800):
+        await session.observe([face()], stamp)
+    snapshot = await session.snapshot(2400, 2800)
+    assert not snapshot["timeline"][0]["eligible"]
+    assert snapshot["timeline"][-1]["eligible"]
+
+
+async def test_initial_backfill_requires_same_candidate_and_snapshot_is_independent(store):
+    session = LiveSession("one", store, Settings())
+    await session.observe([], 0)
+    await enroll(session, start=100)
+    snapshot = await session.snapshot(0, 2400)
+    assert not snapshot["timeline"][0]["eligible"]
+    assert snapshot["timeline"][1]["reason"] == "initial_candidate_backfill"
+    snapshot["timeline"][1]["eligible"] = False
+    assert (await session.snapshot(100, 2400))["timeline"][0]["eligible"]
+    with pytest.raises(ValueError, match="increase"):
+        await session.observe([face()], 100)
+
+
+async def test_discontinuous_initial_candidate_is_not_retroactively_assigned(store):
+    session = LiveSession("one", store, Settings())
+    for stamp in (0, 100, 200):
+        await session.observe([face()], stamp)
+    await session.observe([], 300)
+    await enroll(session, index=1, start=400)
+    snapshot = await session.snapshot(0, 3000)
+    assert snapshot["timeline"][0]["reason"] == "candidate_discontinuity"
+    assert not snapshot["timeline"][0]["eligible"]
+
+
+async def test_saved_memory_refreshes_without_camera_restart(store):
+    session = LiveSession("one", store, Settings())
+    person_id = await enroll(session)
+    await store.correct_person(person_id, {"name": "Anna"}, 1)
+    view = await session.observe([face()], 2400)
+    assert view["encounter"]["memory"]["name"] == "Anna"

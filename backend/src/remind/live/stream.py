@@ -39,7 +39,7 @@ async def serve_vision(
                 observations = await asyncio.get_running_loop().run_in_executor(
                     pool, engine.detect, data
                 )
-                tracks = await session.observe(observations, header["capture_ms"])
+                view = await session.observe(observations, header["capture_ms"])
                 processed += 1
                 await socket.send_json(
                     {
@@ -47,7 +47,7 @@ async def serve_vision(
                         "generation": session.generation,
                         "sequence": header["sequence"],
                         "capture_ms": header["capture_ms"],
-                        "tracks": tracks,
+                        **view,
                         "processing_ms": (time.perf_counter() - before) * 1000,
                         "processed_fps": processed / max(0.001, time.monotonic() - started),
                         "dropped": queue.dropped,

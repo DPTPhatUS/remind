@@ -227,7 +227,13 @@ def test_identity_mapping_requires_faces_and_cannot_use_learned_names():
     labels = [{"start_ms": 0, "end_ms": 1000, "face_count": 1, "visitor_id": "visitor"}]
     result = score_identity(
         labels,
-        [{"source_ms": 100, "tracks": [{"person_id": None, "memory": {"name": "Anna"}}]}],
+        [
+            {
+                "source_ms": 100,
+                "detections": [{}],
+                "candidate": {**{"person_id": None, "memory": {"name": "Anna"}}, "confirmed": True},
+            }
+        ],
         {},
         aligned=True,
     )
@@ -244,9 +250,17 @@ def test_ambiguous_face_mappings_require_review_and_multiple_faces_are_counted()
         {"start_ms": 1000, "end_ms": 2000, "face_count": 2, "visitor_id": None},
     ]
     frames = [
-        {"source_ms": 100, "tracks": [{"person_id": "one"}]},
-        {"source_ms": 200, "tracks": [{"person_id": "two"}]},
-        {"source_ms": 1100, "tracks": [{"person_id": "one"}, {"person_id": "two"}]},
+        {
+            "source_ms": 100,
+            "detections": [{}],
+            "candidate": {**{"person_id": "one"}, "confirmed": True},
+        },
+        {
+            "source_ms": 200,
+            "detections": [{}],
+            "candidate": {**{"person_id": "two"}, "confirmed": True},
+        },
+        {"source_ms": 1100, "detections": [{}, {}], "candidate": None},
     ]
     result = score_identity(labels, frames, {}, aligned=True)
     assert result["ambiguous_mappings"] == ["visitor"]
@@ -312,7 +326,11 @@ def test_duplicate_frame_responses_cannot_inflate_face_denominators():
     from remind.benchmark.scoring import score_identity
 
     visible = [{"start_ms": 0, "end_ms": 1000, "face_count": 1, "visitor_id": "visitor"}]
-    frame = {"source_ms": 100, "tracks": [{"person_id": "profile"}]}
+    frame = {
+        "source_ms": 100,
+        "detections": [{}],
+        "candidate": {**{"person_id": "profile"}, "confirmed": True},
+    }
     result = score_identity(visible, [frame, dict(frame)], {}, aligned=True)
     assert result["frame_accuracy"]["denominator"] == 1
     assert result["duplicate_frame_responses"] == 1

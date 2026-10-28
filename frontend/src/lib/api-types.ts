@@ -64,19 +64,33 @@ export type PersonMemory = Person & {
   encounters: Encounter[];
   facts: Fact[];
 };
-export type FaceTrack = {
-  track_id: string;
+export type FaceBox = [number, number, number, number];
+export type FaceCandidate = {
+  id: string;
   person_id: string | null;
-  box: [number, number, number, number];
-  state: string;
+  box: FaceBox;
+  confirmed: boolean;
+  quality: boolean;
+};
+export type LiveEncounter = {
+  id: string | null;
+  visitor_id: string | null;
+  state: "confirmed" | "absent" | "paused" | "identifying";
+  learning_available: boolean;
+  reason: string;
+  absence_deadline_ms: number | null;
   memory: PersonMemory | null;
 };
-export type VisionMessage = {
+export type LiveView = {
+  detections: { box: FaceBox; quality: boolean }[];
+  candidate: FaceCandidate | null;
+  encounter: LiveEncounter;
+};
+export type VisionMessage = LiveView & {
   type: "vision";
   generation: string;
   sequence: number;
   capture_ms: number;
-  tracks: FaceTrack[];
   processing_ms: number;
   processed_fps: number;
   dropped: number;

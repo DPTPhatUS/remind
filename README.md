@@ -38,12 +38,18 @@ and flushes the final clip. Keep the backend on localhost.
   faces require repeated matching agreement. Names are learned from conversation
   or can be corrected in People; there is no name-selection step.
 - Local CPU SpeechBrain ECAPA-TDNN compares speech with the saved user reference.
-  Clear non-user speech is assumed to belong to the single visible visitor.
+  Clear non-user speech is assumed to belong to the selected encounter visitor.
   Silence, detected overlapping turns, insufficient usable speech, and uncertain
   matches cannot establish personal facts. Anonymous transcription labels are
   local to each clip. Overlap missed by transcription can still be misclassified.
-- Multiple faces or an uncertain face suspend profile learning. Changing visitors
-  starts a separate encounter. Delayed clips retain their capture-time identity.
+- Audio is transcribed even before a visitor is identified. One temporary face
+  candidate groups observations for recognition or enrollment. Initial speech can
+  be associated later only when that same candidate supports continuity.
+- The selected visitor remains eligible for up to five seconds without confirmed
+  visual presence. Another candidate, conflicting identity, multiple faces or stale
+  camera data pause learning. A confirmed replacement starts a separate encounter.
+  Whole speech turns are associated at capture time; one clip can contain several
+  encounters. Ambiguous transition speech remains unattributed.
 - OpenAI provides English speaker-labelled transcription, contextual fact
   extraction, and a separate evidence-verification pass. Recent dialogue spans
   clip boundaries. Questions alone do not establish their premises: facts require
@@ -73,14 +79,18 @@ SQLite, face templates, and user voice representations remain local at
 SFace, and ECAPA model assets. Audio is sent to OpenAI for transcription;
 transcript context and candidate facts are sent for extraction and verification.
 
-Temporary conversation clips default to a 1 GiB cap and 24-hour expiry. Failed
+Temporary conversation clips have a 1 GiB cap and 24-hour expiry. Unattributed
+transcripts also expire after 24 hours; attributed textual evidence stays with
+memories. Initial identity attribution can wait 30 seconds without blocking
+transcription. Learning retries reuse saved audio-stage results. Failed
 uploads pause capture and retain one clip in the current tab for retry or download.
 Failed processing can be retried from Live. The existing bounded recording
 transport is retained, including brief upload gaps; interrupted sentences may be
 incomplete. Stop recording when an interaction should not be recorded.
 
 This version assumes one visitor and a quiet conversation. A television or another
-off-screen voice can be mistaken for the visitor. Voice and face operating points
+off-screen voice can be mistaken for the visitor, including during the five-second
+absence allowance. Voice and face operating points
 are uncalibrated defaults, not probabilities. Automated fixtures and public-audio
 model smokes do not establish real-world recognition or personal-fact accuracy.
 
@@ -98,7 +108,7 @@ providers may require an adapter rather than only changing the model ID.
 | --- | --- |
 | `backend/src/remind/app.py` | HTTP routes, request validation, and local access guards |
 | `backend/src/remind/runtime.py` | Startup, shutdown, models, and background tasks |
-| `backend/src/remind/live/` | Camera transport, face tracking, and encounter association |
+| `backend/src/remind/live/` | Camera transport, one face candidate, and encounter association |
 | `backend/src/remind/vision/` | Face detection, recognition, and model installation |
 | `backend/src/remind/audio/` | Audio decoding, user-voice verification, and cloud providers |
 | `backend/src/remind/memory/` | Evidence validation, consolidation, and durable jobs |
@@ -128,9 +138,10 @@ npm test
 npm run build
 npm run lint
 # Browser fixture setup is described in benchmarks/README.md.
-npm run test:e2e
+PLAYWRIGHT_CHANNEL=chrome npm run test:e2e
 ```
 
 See [the API contract](backend/docs/API.md),
+[attribution implementation and cleanup](backend/docs/ATTRIBUTION.md),
 [the evaluation protocol](docs/testing/realtime-memory-evaluation.md), and
 [benchmark and browser test instructions](benchmarks/README.md).

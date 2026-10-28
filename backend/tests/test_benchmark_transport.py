@@ -41,7 +41,9 @@ class FakeSocket:
                 {
                     **header,
                     "type": "vision",
-                    "tracks": [{"person_id": "profile", "memory": {"highlights": ["Gardener"]}}],
+                    "detections": [{"box": [0.1, 0.1, 0.2, 0.2]}],
+                    "candidate": {"person_id": "profile", "confirmed": True},
+                    "encounter": {"visitor_id": "profile"},
                     "dropped": 0,
                 }
             )

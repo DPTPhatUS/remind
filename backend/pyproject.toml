@@ -14,7 +14,6 @@ dependencies = [
     "numpy>=2.4.6",
     "opencv-python-headless>=5.0.0.93",
     "av>=19.0.1",
-    "scipy>=1.18.1",
 ]
 
 [dependency-groups]

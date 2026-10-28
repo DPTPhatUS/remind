@@ -40,8 +40,7 @@ async def test_open_close_guards_preserve_the_current_connection(tmp_path):
 
 async def test_foreign_keys_reject_orphan_records_without_breaking_later_writes(store):
     with pytest.raises(sqlite3.IntegrityError):
-        await store.add_participant("missing-encounter", "missing-person", "track", 0)
+        await store.start_encounter("session", "missing-person", 0)
     person = await store.create_person("Anna")
-    encounter = await store.start_encounter("session")
-    await store.add_participant(encounter, person["id"], "track", 0)
+    encounter = await store.start_encounter("session", person["id"], 0)
     assert (await store.get_encounter(encounter))["id"] == encounter

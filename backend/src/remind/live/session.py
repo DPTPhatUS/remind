@@ -1,39 +1,18 @@
+"""One visible candidate and the capture-time state of a visitor encounter."""
+
 import asyncio
 import copy
 import time
-from typing import Any, TypedDict
 
 import numpy as np
 
 from remind.config import Settings
-from remind.memory.store import MemoryStore
+from remind.database import Record
+from remind.memory.capture import CaptureStore
+from remind.memory.store import MemoryStore, now
+from remind.vision.candidate import Candidate
 from remind.vision.gallery import FaceGallery
-from remind.vision.tracking import Track, Tracker
 from remind.vision.types import FaceObservation
-
-
-class VisiblePerson(TypedDict):
-    track_id: str
-    person_id: str | None
-    state: str
-    box: list[float]
-    last_seen_ms: float
-    memory: dict[str, Any] | None
-
-
-class CapturedPerson(TypedDict):
-    person_id: str | None
-    track_id: str
-    box: list[float]
-
-
-class TimelineEntry(TypedDict):
-    ms: float
-    encounter: str | None
-    visitor_id: str | None
-    eligible: bool
-    face_count: int
-    people: list[CapturedPerson]
 
 
 class LiveSession:
@@ -41,222 +20,296 @@ class LiveSession:
         self.generation = generation
         self.store = store
         self.settings = settings
-        self.tracker = Tracker()
+        self.captures = CaptureStore(store, settings.attribution_wait_seconds)
+        self.store.template_threshold = settings.match_threshold
+        self.candidate: Candidate | None = None
+        self.candidate_versions: dict[str, int] = {}
+        self.initial_candidate = False
+        self.had_encounter = False
         self.gallery = FaceGallery(settings.match_threshold, settings.match_margin)
         self.revision = -1
         self.encounter: str | None = None
         self.visitor_id: str | None = None
-        self.last_presence: float = 0
-        self.seen: dict[tuple[str, str], float] = {}
-        self.cards: dict[str, dict[str, Any]] = {}
-        self.stopped = False
-        self.lock = asyncio.Lock()
+        self.visitor_version: int | None = None
+        self.last_presence = float("-inf")
+        self.last_capture_ms = float("-inf")
+        self.last_observed = time.monotonic()
         self.last_heartbeat = time.monotonic()
-        self.timeline: list[TimelineEntry] = []
+        self.timeline: list[Record] = []
+        self.stopped = False
+        self.forgotten = False
+        self.lock = asyncio.Lock()
+        self.cards: dict[str, Record] = {}
+        self.reason = "no_visitor"
+        self.eligible = False
 
     async def _refresh_gallery(self) -> None:
         revision = self.store.db.revision
-        if self.revision == revision:
+        if revision == self.revision:
             return
         entries = await self.store.templates()
         self.gallery.replace(
             [
-                (entry["person_id"], np.frombuffer(entry["embedding"], np.float32))
-                for entry in entries
-                if entry["model"] == "sface-2021dec"
+                (r["person_id"], np.frombuffer(r["embedding"], np.float32))
+                for r in entries
+                if r["model"] == "sface-2021dec"
             ]
         )
         self.cards.clear()
-        # A concurrent write after the read must still trigger the next refresh.
         self.revision = revision
 
-    async def _recognize_track(self, track: Track, capture_ms: float) -> None:
-        assert track.feature is not None
-        match = self.gallery.match(track.feature)
-        if match.person_id:
-            if track.candidate == match.person_id:
-                track.votes += 1
-            else:
-                track.candidate = match.person_id
-                track.votes = 1
-            track.person_id = match.person_id if track.votes >= 3 else None
-            track.state = "remembered" if track.person_id else "observing"
-            return
+    def _abandon_candidate(self) -> None:
+        if self.candidate:
+            for point in self.timeline:
+                if (
+                    point.get("candidate_id") == self.candidate.id
+                    and point["reason"] == "initial_candidate"
+                ):
+                    point["reason"] = "candidate_discontinuity"
+        self.candidate = None
+        self.initial_candidate = False
 
-        track.person_id = None
-        track.candidate = None
-        track.votes = 0
-        track.state = "ambiguous" if match.ambiguous else "unknown"
-        eligible = (
-            not match.ambiguous
-            and capture_ms - track.first_ms >= self.settings.enrollment_ms
-            and track.usable_count >= self.settings.min_observations
-            and track.box[2] >= 0.12
+    async def _recognize(self, candidate: Candidate, stamp: float) -> tuple[str | None, bool]:
+        assert candidate.feature is not None
+        match = self.gallery.match(candidate.feature)
+        conflict = match.ambiguous or bool(
+            match.person_id and candidate.person_id and match.person_id != candidate.person_id
         )
-        if not eligible:
-            return
-
-        # The session lock serializes the final gallery check and enrollment.
+        if match.person_id:
+            if candidate.match_id == match.person_id:
+                candidate.votes += 1
+            else:
+                candidate.match_id = match.person_id
+                candidate.votes = 1
+                if conflict:
+                    candidate.samples.clear()
+            if candidate.votes < 3:
+                return None, conflict
+            candidate.person_id = match.person_id
+            if stamp - candidate.last_template_ms >= 2000:
+                await self.store.update_templates(match.person_id, candidate.feature)
+                candidate.last_template_ms = stamp
+            return match.person_id, False
+        candidate.match_id = None
+        candidate.votes = 0
+        if candidate.enrolled or candidate.person_id or match.ambiguous:
+            return None, conflict
+        samples = candidate.enrollment_samples(self.settings.match_threshold)
+        if (
+            stamp - candidate.first_ms < self.settings.enrollment_ms
+            or len(candidate.samples) < self.settings.min_observations
+            or candidate.samples[-1][0] - candidate.samples[0][0] < self.settings.enrollment_ms
+            or candidate.box[2] < 0.12
+            or not samples
+        ):
+            return None, conflict
         await self._refresh_gallery()
-        recheck = self.gallery.match(track.feature)
+        recheck = self.gallery.match(candidate.feature)
         if recheck.person_id or recheck.ambiguous:
-            return
-        person = await self.store.create_person(thumbnail=track.thumbnail)
-        for sample in track.samples:
-            await self.store.add_template(person["id"], sample)
-        track.person_id = person["id"]
-        track.candidate = person["id"]
-        track.votes = 3
-        track.state = "remembered"
+            return None, recheck.ambiguous
+        person = await self.store.enroll_person(candidate.thumbnail, samples)
+        candidate.enrolled = True
+        candidate.person_id = person["id"]
+        candidate.match_id = person["id"]
+        candidate.votes = 3
+        candidate.last_template_ms = stamp
         await self._refresh_gallery()
+        return person["id"], False
 
-    def _backfill_identity(self, track: Track, visitor_id: str) -> None:
-        # Retain the introduction while this same uninterrupted face was stabilizing.
-        for entry in self.timeline:
-            if (
-                entry["ms"] < track.first_ms
-                or entry["face_count"] != 1
-                or entry["encounter"] not in (None, self.encounter)
-            ):
-                continue
-            for person in entry["people"]:
-                if person["track_id"] == track.id and person["person_id"] in (None, visitor_id):
-                    person["person_id"] = visitor_id
-                    entry["encounter"] = self.encounter
-                    entry["visitor_id"] = visitor_id
-                    entry["eligible"] = True
+    async def _close_encounter(self, stamp: float) -> None:
+        if self.encounter:
+            await self.store.close_encounter(self.encounter, stamp)
+        self.encounter = None
+        self.visitor_id = None
+        self.visitor_version = None
+        self.cards.clear()
 
-    async def _update_encounter(
-        self, single: VisiblePerson | None, tracks: list[Track], capture_ms: float
-    ) -> None:
-        visitor_id = single["person_id"] if single else None
-        if visitor_id and single:
-            if self.encounter and self.visitor_id != visitor_id:
-                await self.close_encounter(capture_ms)
-            if self.encounter is None:
-                self.encounter = await self.store.start_encounter(self.generation)
-                self.visitor_id = visitor_id
-                track = next(track for track in tracks if track.id == single["track_id"])
-                self._backfill_identity(track, visitor_id)
-
-            key = (single["track_id"], visitor_id)
-            if key not in self.seen:
-                await self.store.add_participant(
-                    self.encounter, visitor_id, single["track_id"], capture_ms
-                )
-            self.seen[key] = capture_ms
-            self.last_presence = capture_ms
-
-        if self.encounter is None:
+    async def _confirm(self, person_id: str, stamp: float) -> None:
+        person = await self.store.get_person(person_id)
+        if person is None:
             return
-        for key, last_seen in list(self.seen.items()):
-            if capture_ms - last_seen > 2000:
-                await self.store.end_participant(self.encounter, key[0], last_seen)
-                del self.seen[key]
-        if self.encounter and capture_ms - self.last_presence > 8000:
-            await self.close_encounter(capture_ms)
+        if self.encounter and self.visitor_id != person_id:
+            await self._close_encounter(stamp)
+        if self.encounter is None:
+            start_ms = (
+                self.candidate.first_ms if self.initial_candidate and self.candidate else stamp
+            )
+            self.encounter = await self.store.start_encounter(self.generation, person_id, start_ms)
+            self.visitor_id = person_id
+            self.visitor_version = person["version"]
+            if self.initial_candidate and self.candidate:
+                version = self.candidate_versions.get(person_id, person["version"])
+                for point in self.timeline:
+                    if (
+                        point.get("candidate_id") == self.candidate.id
+                        and point["reason"] == "initial_candidate"
+                    ):
+                        point.update(
+                            eligible=True,
+                            encounter_id=self.encounter,
+                            visitor_id=person_id,
+                            person_version=version,
+                            reason="initial_candidate_backfill",
+                        )
+            self.had_encounter = True
+        self.visitor_version = person["version"]
+        self.last_presence = stamp
 
-    async def observe(
-        self, observations: list[FaceObservation], capture_ms: float
-    ) -> list[VisiblePerson]:
+    async def observe(self, observations: list[FaceObservation], capture_ms: float) -> Record:
         async with self.lock:
             if self.stopped:
-                return []
+                return self._view(observations)
+            # Increasing packet sequence does not guarantee increasing source time.
+            if capture_ms <= self.last_capture_ms:
+                raise ValueError("Frame timestamp must increase")
+            self.last_capture_ms = capture_ms
+            self.last_observed = time.monotonic()
+            await self.store.start_session(self.generation)
             await self._refresh_gallery()
-            tracks = self.tracker.update(observations, capture_ms)
-            result: list[VisiblePerson] = []
-            for track in tracks:
-                if not track.quality:
-                    continue
-                await self._recognize_track(track, capture_ms)
-                result.append(
-                    {
-                        "track_id": track.id,
-                        "person_id": track.person_id,
-                        "state": track.state,
-                        "box": track.box,
-                        "last_seen_ms": capture_ms,
-                        "memory": None,
-                    }
+            if (
+                self.encounter
+                and capture_ms - self.last_presence >= self.settings.visitor_absence_ms
+            ):
+                await self._close_encounter(self.last_presence + self.settings.visitor_absence_ms)
+            confirmed = None
+            conflict = False
+            continuous = False
+            if len(observations) != 1:
+                self._abandon_candidate()
+            else:
+                observation = observations[0]
+                continuous = bool(
+                    self.candidate and self.candidate.continues(observation, capture_ms)
                 )
-
-            # Count unusable faces too: one usable face among several is not one-on-one.
-            single = result[0] if len(observations) == 1 and len(result) == 1 else None
-            await self._update_encounter(single, tracks, capture_ms)
-            for item in result:
-                person_id = item["person_id"]
-                if person_id:
-                    if person_id not in self.cards:
-                        memory = await self.store.person_memory(
-                            person_id, exclude_encounter_id=self.encounter
-                        )
-                        if memory is not None:
-                            self.cards[person_id] = memory
-                    item["memory"] = self.cards.get(person_id)
-
-            visitor_id = single["person_id"] if single else None
+                if not continuous:
+                    self._abandon_candidate()
+                    self.candidate = Candidate(observation["box"], capture_ms, capture_ms)
+                    self.candidate_versions = {
+                        p["id"]: p["version"] for p in await self.store.list_people()
+                    }
+                    self.initial_candidate = not self.had_encounter
+                assert self.candidate is not None
+                self.candidate.observe(observation, capture_ms)
+                if self.candidate.quality:
+                    confirmed, conflict = await self._recognize(self.candidate, capture_ms)
+                if confirmed:
+                    await self._confirm(confirmed, capture_ms)
+            self.eligible = False
+            if len(observations) > 1:
+                self.reason = "multiple_faces"
+            elif conflict:
+                self.reason = "identity_conflict"
+            elif confirmed and self.visitor_id == confirmed:
+                self.reason = "direct_confirmation"
+                self.eligible = True
+            elif (
+                self.visitor_id
+                and (
+                    not observations
+                    or (
+                        continuous
+                        and self.candidate
+                        and self.candidate.person_id == self.visitor_id
+                    )
+                )
+                and capture_ms < self.last_presence + self.settings.visitor_absence_ms
+                and self.reason not in ("multiple_faces", "identity_conflict", "new_candidate")
+            ):
+                self.reason = "absence_allowance"
+                self.eligible = True
+            elif self.visitor_id:
+                self.reason = "new_candidate"
+            elif self.candidate and self.initial_candidate:
+                self.reason = "initial_candidate"
+            else:
+                self.reason = "no_visitor"
+            voice = await self.store.voice_status()
             self.timeline.append(
                 {
                     "ms": capture_ms,
-                    "encounter": self.encounter,
+                    "candidate_id": self.candidate.id if self.candidate else None,
+                    "encounter_id": self.encounter,
                     "visitor_id": self.visitor_id,
-                    "eligible": bool(visitor_id and visitor_id == self.visitor_id),
+                    "person_version": self.visitor_version,
+                    "voice_version": voice["version"],
+                    "eligible": self.eligible,
                     "face_count": len(observations),
-                    "people": [
-                        {
-                            "person_id": item["person_id"],
-                            "track_id": item["track_id"],
-                            "box": item["box"],
-                        }
-                        for item in result
-                    ],
+                    "reason": self.reason,
+                    "eligible_until": self.last_presence + self.settings.visitor_absence_ms
+                    if self.visitor_id
+                    else capture_ms + 500,
                 }
             )
-            self.timeline = [entry for entry in self.timeline if capture_ms - entry["ms"] < 120000]
-            return result
+            self.timeline = [p for p in self.timeline if capture_ms - p["ms"] <= 120000]
+            await self.captures.update_timeline(self.generation, self.timeline)
+            if self.visitor_id and self.visitor_id not in self.cards:
+                memory = await self.store.person_memory(self.visitor_id, self.encounter)
+                if memory:
+                    self.cards[self.visitor_id] = memory
+            return self._view(observations)
 
-    async def snapshot(self, start_ms: float, end_ms: float) -> dict[str, Any] | None:
+    def _view(self, observations: list[FaceObservation]) -> Record:
+        candidate = self.candidate
+        return {
+            "detections": [{"box": o["box"], "quality": o["quality"]} for o in observations],
+            "candidate": {
+                "id": candidate.id,
+                "box": candidate.box,
+                "person_id": candidate.person_id,
+                "confirmed": candidate.votes >= 3,
+                "quality": candidate.quality,
+            }
+            if candidate
+            else None,
+            "encounter": {
+                "id": self.encounter,
+                "visitor_id": self.visitor_id,
+                "state": "confirmed"
+                if self.reason == "direct_confirmation"
+                else "absent"
+                if self.reason == "absence_allowance"
+                else "paused"
+                if self.visitor_id
+                else "identifying",
+                "learning_available": self.eligible,
+                "reason": self.reason,
+                "absence_deadline_ms": self.last_presence + self.settings.visitor_absence_ms
+                if self.visitor_id
+                else None,
+                "memory": self.cards.get(self.visitor_id or ""),
+            },
+        }
+
+    async def snapshot(self, start_ms: float, end_ms: float) -> Record:
         async with self.lock:
-            timeline = [entry for entry in self.timeline if start_ms <= entry["ms"] <= end_ms]
-            encounters = {entry["encounter"] for entry in timeline if entry["encounter"]}
-            visitor_ids = {entry["visitor_id"] for entry in timeline if entry["visitor_id"]}
-            # Delayed clips must bind to one captured visitor, never the current visitor.
-            if len(encounters) != 1 or len(visitor_ids) != 1:
-                return None
-            visitor_id = next(iter(visitor_ids))
-            person = await self.store.get_person(visitor_id)
-            if person is None:
-                return None
+            before = [p for p in self.timeline if p["ms"] <= start_ms]
+            timeline = ([before[-1]] if before else []) + [
+                p for p in self.timeline if start_ms < p["ms"] <= end_ms
+            ]
+            voice = await self.store.voice_status()
             return {
-                "encounter": next(iter(encounters)),
-                "visitor_id": visitor_id,
-                "voice_version": (await self.store.voice_status())["version"],
-                "versions": {visitor_id: person["version"]},
                 "timeline": copy.deepcopy(timeline),
-                "start_ms": start_ms,
-                "end_ms": end_ms,
+                "voice_version": timeline[0]["voice_version"] if timeline else voice["version"],
             }
 
-    async def _finish_encounter(self, capture_ms: float | None = None) -> None:
-        if self.encounter is None:
-            return
-        for (track_id, _), last_seen in self.seen.items():
-            end_ms = last_seen if capture_ms is None else min(last_seen, capture_ms)
-            await self.store.end_participant(self.encounter, track_id, end_ms)
-        await self.store.close_encounter(self.encounter)
-
-    async def close_encounter(self, capture_ms: float) -> None:
-        await self._finish_encounter(capture_ms)
-        self.encounter = None
-        self.visitor_id = None
-        self.seen.clear()
-        self.cards.clear()
-
-    async def stop(self) -> None:
+    async def maintain(self) -> None:
         async with self.lock:
-            if self.stopped:
+            if not self.stopped:
+                await self.captures.update_timeline(self.generation, self.timeline)
+
+    async def stop(self, *, forgetting: bool = False) -> None:
+        async with self.lock:
+            if self.stopped and not forgetting:
                 return
             self.stopped = True
-            # Preserve the encounter and timeline for retained final-upload snapshots.
-            await self._finish_encounter()
-            self.tracker = Tracker()
+            self.forgotten = self.forgotten or forgetting
+            await self.captures.update_timeline(
+                self.generation, self.timeline, final=True, cancel_unresolved=forgetting
+            )
+            await self._close_encounter(max(0, self.last_capture_ms))
+            async with self.store.db.transaction() as db:
+                await db.execute(
+                    "UPDATE capture_sessions SET ended_at=?,cancelled=? WHERE generation=?",
+                    (now(), int(self.forgotten), self.generation),
+                )
+            self.candidate = None

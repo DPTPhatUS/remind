@@ -11,6 +11,7 @@ from remind.audio.speaker import UserVoiceVerifier
 from remind.config import Settings
 from remind.database import Database
 from remind.live.session import LiveSession
+from remind.memory.capture import CaptureStore
 from remind.memory.store import MemoryStore
 from remind.memory.worker import MemoryWorker
 from remind.vision.engine import OpenCVVision
@@ -31,6 +32,7 @@ class Runtime:
         self.settings = settings
         self.database = Database(settings.data_dir / "remind.sqlite3")
         self.store = MemoryStore(self.database)
+        self.captures = CaptureStore(self.store, settings.attribution_wait_seconds)
         self.registry = ModelRegistry(settings.data_dir / "models")
         self.verifier = verifier or UserVoiceVerifier(settings, self.registry)
         self.worker = MemoryWorker(self.store, settings, self.registry, verifier=self.verifier)
@@ -44,7 +46,7 @@ class Runtime:
         tasks: list[asyncio.Task] = []
         try:
             await self.database.create_schema()
-            await self.store.recover_encounters()
+            await self.captures.recover()
             try:
                 self.vision = await asyncio.get_running_loop().run_in_executor(
                     self.vision_pool, OpenCVVision, self.registry, self.settings.vision_threads
@@ -75,6 +77,8 @@ class Runtime:
             session = self.session
             if session and not session.stopped and time.monotonic() - session.last_heartbeat > 10:
                 await session.stop()
+            elif session and not session.stopped:
+                await session.maintain()
             await asyncio.sleep(0.25)
 
     async def maintain_memory(self) -> None:

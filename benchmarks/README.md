@@ -8,7 +8,7 @@ except transcript text and roles in the conversation component benchmark.
 | --- | --- | --- |
 | `audio` | Enrollment + audio → timestamped roles | Decoding, automatic transcription/diarization, local user/visitor/uncertain decisions |
 | `conversation` | Role-labelled text → saved facts | Contextual extraction, verification, evidence validation, consolidation |
-| `face` | Ordered video encounters → face associations | Detection, tracking, automatic enrollment, recognition on return |
+| `face` | Ordered video encounters → face associations | Detection, one face candidate, automatic enrollment, recognition on return |
 | `video` | Enrollment + video/audio → saved visitor facts | The complete backend pipeline, including capture-time face gating |
 
 ## Run
@@ -143,3 +143,23 @@ Useful production guard tests and shared scoring/media/transport tests remain.
 Historical reports, run stores, prepared clips, archived source copies and browser
 investigation tools were deleted. Original media, source annotations/provenance,
 application test inputs, models, licenses, credentials and active memories remain.
+
+## Attribution rewrite
+
+Video uploads are accepted before visitor identification. Each clip is transcribed
+once; complete supported turns are then grouped into learning jobs for their
+capture-time encounters. One clip can contain several visitors. Unattributed
+turns retain their original voice role and a separate reason for missing
+association; they expire after 24 hours. The selected visitor has a five-second
+absence allowance, which can wrongly attribute an off-camera speaker. Multiple
+faces or a competing candidate pause attribution immediately.
+
+Reports count all detector observations separately from the single candidate.
+Sparse face labels still limit accuracy interpretation. Voice scores and roles
+are reported before attribution rather than being overwritten by face gating.
+See [the implementation notes](../backend/docs/ATTRIBUTION.md) for persistence,
+cleanup and safeguards.
+
+The ordinary browser suite can use installed Chrome with
+`PLAYWRIGHT_CHANNEL=chrome npm run test:e2e` from `frontend/`. Browser contract
+fixtures and real local-face tests do not establish cloud-learning accuracy.

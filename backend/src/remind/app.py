@@ -70,6 +70,8 @@ def create_app(
         session = runtime.session
         if not session or session.generation != generation:
             raise HTTPException(409, "Live session expired; start again")
+        if session.forgotten:
+            raise HTTPException(409, "This capture session was forgotten; start again")
         if session.stopped and (
             not allow_stopped or time.monotonic() - session.last_heartbeat > 120
         ):
@@ -168,7 +170,7 @@ def create_app(
     async def forget(ident: str):
         session = runtime.session
         if session:
-            await session.stop()
+            await session.stop(forgetting=True)
             async with session.lock:
                 await store.forget_person(ident)
                 session.timeline.clear()
@@ -194,11 +196,11 @@ def create_app(
 
     @app.get("/api/jobs")
     async def jobs():
-        return await store.pending_jobs()
+        return await runtime.captures.pending_jobs()
 
     @app.post("/api/jobs/{ident}/retry")
     async def retry_job(ident: str):
-        if not await store.retry_job(ident):
+        if not await runtime.captures.retry_job(ident):
             raise HTTPException(409, "Only failed, retained jobs can be retried")
         return {"status": "pending"}
 
@@ -209,6 +211,7 @@ def create_app(
         if runtime.session and not runtime.session.stopped:
             raise HTTPException(409, "Another tab is using the camera session. Stop it first.")
         generation = str(uuid4())
+        await store.start_session(generation)
         runtime.session = LiveSession(generation, store, settings)
         voice = await runtime.voice_status()
         return {
@@ -222,7 +225,7 @@ def create_app(
     async def stop(generation: str):
         if runtime.session and runtime.session.generation == generation:
             await runtime.session.stop()
-        return {"pending_jobs": len(await store.pending_jobs())}
+        return {"pending_jobs": len(await runtime.captures.pending_jobs())}
 
     @app.post("/api/live/{generation}/clips")
     async def clip(generation: str, request: Request):
@@ -236,8 +239,6 @@ def create_app(
         if not 0 < metadata.end_ms - metadata.start_ms <= 10000:
             raise HTTPException(422, "Invalid clip duration")
         snapshot = await session.snapshot(metadata.start_ms, metadata.end_ms)
-        if not snapshot or not snapshot["versions"]:
-            return {"status": "no_participants"}
         spool = settings.data_dir / "spool"
         spool.mkdir(parents=True, exist_ok=True)
         used = sum(p.stat().st_size for p in spool.glob("*") if p.is_file())
@@ -256,18 +257,24 @@ def create_app(
                     f.write(chunk)
             if total == 0:
                 raise HTTPException(422, "Clip is empty")
-            job = await store.enqueue_job(
-                snapshot["encounter"],
+            receipt = await runtime.captures.receive_clip(
+                generation,
                 metadata.window_id,
-                {**snapshot, "clip_path": str(path.resolve())},
+                metadata.start_ms,
+                metadata.end_ms,
+                str(path.resolve()),
+                snapshot["timeline"],
+                snapshot["voice_version"],
             )
+            if session.stopped:
+                await runtime.captures.update_timeline(generation, session.timeline, final=True)
         except ValueError as exc:
             path.unlink(missing_ok=True)
             raise HTTPException(409, str(exc)) from exc
         except BaseException:
             path.unlink(missing_ok=True)
             raise
-        return {"status": "queued", "job_id": job}
+        return receipt
 
     @app.websocket("/api/live/{generation}/vision")
     async def vision(socket: WebSocket, generation: str):

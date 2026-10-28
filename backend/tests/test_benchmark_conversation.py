@@ -6,6 +6,7 @@ from remind.benchmark import conversation
 from remind.benchmark.inputs import ConversationCase
 from remind.config import Settings
 from remind.database import Database
+from remind.memory.capture import CaptureStore
 from remind.memory.store import MemoryStore
 
 
@@ -138,7 +139,7 @@ async def test_text_learning_accumulates_context_and_saves_without_voice(tmp_pat
     with sqlite3.connect(tmp_path / "data.sqlite3") as db:
         assert db.execute("SELECT embeddings FROM user_voice").fetchone()[0] is None
         assert db.execute("SELECT count(*) FROM templates").fetchone()[0] == 0
-        assert db.execute("SELECT count(*) FROM jobs WHERE status='done'").fetchone()[0] == 4
+        assert db.execute("SELECT count(*) FROM jobs WHERE status='done'").fetchone()[0] == 8
 
 
 @pytest.mark.parametrize(
@@ -289,25 +290,51 @@ async def test_text_benchmark_and_live_commits_preserve_the_same_history(tmp_pat
         await store.set_voice_profile([[1.0, 0.0]], "unit-test")
         voice = await store.voice_status()
         person = await store.create_person()
-        eid = await store.start_encounter("live-test")
-        await store.add_participant(eid, person["id"], "track", 0)
+        eid = await store.start_encounter("live-test", person["id"], 0)
         provider = Provider(propose)
         for batch in case.encounters[0].batches:
-            job_id = await store.enqueue_job(
-                eid,
-                batch.id,
+            captures = CaptureStore(store)
+            timeline = [
                 {
+                    "ms": stamp,
+                    "eligible": True,
+                    "encounter_id": eid,
                     "visitor_id": person["id"],
-                    "versions": {person["id"]: person["version"]},
-                    "voice_version": voice["version"],
-                    "start_ms": batch.start_ms,
-                    "end_ms": batch.end_ms,
+                    "person_version": person["version"],
+                    "reason": "direct_confirmation",
+                }
+                for stamp in range(int(batch.start_ms), int(batch.end_ms) + 1, 100)
+            ]
+            receipt = await captures.receive_clip(
+                "live-test",
+                batch.id,
+                batch.start_ms,
+                batch.end_ms,
+                "fixture.wav",
+                timeline,
+                voice["version"],
+            )
+            audio_job = await captures.claim_job("test")
+            assert audio_job["clip_id"] == receipt["clip_id"]
+            await captures.finish_audio(
+                audio_job,
+                {
+                    "segments": [
+                        {
+                            **t.model_dump(),
+                            "id": f"{audio_job['id']}:{t.id}",
+                            "speaker": t.role,
+                            "start_ms": t.start_ms - batch.start_ms,
+                            "end_ms": t.end_ms - batch.start_ms,
+                        }
+                        for t in batch.turns
+                    ],
+                    "voice_ready": True,
+                    "metrics": {},
                 },
             )
-            job = await store.claim_job("live-test", 0)
-            segments = [
-                {**t.model_dump(), "id": f"{job_id}:{t.id}", "speaker": t.role} for t in batch.turns
-            ]
+            job = await captures.claim_job("test")
+            segments = await captures.learning_segments(job)
             learned = await learn_conversation(
                 store,
                 provider,
@@ -318,7 +345,7 @@ async def test_text_benchmark_and_live_commits_preserve_the_same_history(tmp_pat
                 batch.start_ms,
                 can_learn=True,
             )
-            assert await store.finish_job(job_id, job["lease_token"], learned)
+            assert await captures.finish_learning(job, learned)
         live_facts = await store.facts_for_person(person["id"])
     finally:
         await database.close()

@@ -40,14 +40,6 @@ async def save_conversation_result(
     order: float,
 ) -> None:
     """Persist within a transaction; person must be an authorized raw store row."""
-    for segment in result.get("segments", []):
-        segment_id = segment.get("id")
-        if not isinstance(segment_id, str) or not segment_id:
-            continue
-        await db.execute(
-            "INSERT OR IGNORE INTO transcripts VALUES(?,?,?,?,?)",
-            (segment_id, job_id, encounter_id, segment.get("start_ms", 0), json.dumps(segment)),
-        )
     transcript_rows = await rows(
         db, "SELECT id,data FROM transcripts WHERE encounter_id=?", (encounter_id,)
     )
@@ -71,6 +63,7 @@ async def save_conversation_result(
 class MemoryStore:
     def __init__(self, db: Database) -> None:
         self.db = db
+        self.template_threshold = 0.55
 
     async def create_person(
         self,
@@ -265,48 +258,41 @@ class MemoryStore:
 
     async def forget_person(self, ident: str) -> None:
         async with self.db.transaction() as db:
-            encounters = await rows(
-                db, "SELECT DISTINCT encounter_id FROM participants WHERE person_id=?", (ident,)
+            # A shared recording contains the forgotten visitor even if other turns
+            # belong to somebody else. Keep their independent text memories only.
+            clips = await rows(
+                db,
+                "SELECT DISTINCT c.id,c.path FROM clips c "
+                "JOIN transcripts t ON t.clip_id=c.id JOIN encounters e ON e.id=t.encounter_id "
+                "WHERE e.person_id=?",
+                (ident,),
             )
-            affected = set()
-            for encounter in encounters:
-                eid = encounter["encounter_id"]
-                await db.execute("INSERT OR IGNORE INTO invalidated_encounters VALUES(?)", (eid,))
-                for job in await rows(db, "SELECT payload FROM jobs WHERE encounter_id=?", (eid,)):
-                    path = json.loads(job["payload"]).get("clip_path")
-                    if path:
-                        await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (path,))
+            for clip in clips:
+                if clip["path"]:
+                    await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (clip["path"],))
                 await db.execute(
-                    "UPDATE jobs SET status='cancelled',payload='{}',lease_token=NULL WHERE "
-                    "encounter_id=?",
-                    (eid,),
+                    "UPDATE clips SET path=NULL,cancelled=1,timeline='[]' WHERE id=?", (clip["id"],)
                 )
-                source_facts = await rows(
-                    db,
-                    "SELECT DISTINCT f.id,f.person_id,f.predicate,f.subject FROM facts f "
-                    "LEFT JOIN fact_evidence ev ON ev.fact_id=f.id "
-                    "LEFT JOIN transcripts t ON t.id=ev.segment_id "
-                    "WHERE f.encounter_id=? OR t.encounter_id=?",
-                    (eid, eid),
+                await db.execute(
+                    "UPDATE jobs SET status='cancelled',lease_token=NULL,payload='{}' "
+                    "WHERE clip_id=? AND status!='done'",
+                    (clip["id"],),
                 )
-                for fact in source_facts:
-                    affected.add(fact["person_id"])
-                    if fact["subject"] == "visitor" and fact["predicate"] in IDENTITY_FIELDS:
-                        person = await rows(
-                            db, "SELECT manual FROM people WHERE id=?", (fact["person_id"],)
-                        )
-                        if person and fact["predicate"] not in json.loads(person[0]["manual"]):
-                            await db.execute(
-                                f"UPDATE people SET {fact['predicate']}=NULL WHERE id=?",
-                                (fact["person_id"],),
-                            )
-                    await db.execute("DELETE FROM facts WHERE id=?", (fact["id"],))
-                await db.execute("DELETE FROM transcripts WHERE encounter_id=?", (eid,))
-                await db.execute("UPDATE encounters SET summary=NULL WHERE id=?", (eid,))
+            # Queued audio may not have produced transcripts yet.
+            for clip in await rows(db, "SELECT id,path,timeline FROM clips WHERE cancelled=0"):
+                if any(point.get("visitor_id") == ident for point in json.loads(clip["timeline"])):
+                    if clip["path"]:
+                        await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (clip["path"],))
+                    await db.execute(
+                        "UPDATE clips SET cancelled=1,path=NULL,timeline='[]' WHERE id=?",
+                        (clip["id"],),
+                    )
+                    await db.execute(
+                        "UPDATE jobs SET status='cancelled',lease_token=NULL,payload='{}' "
+                        "WHERE clip_id=? AND status!='done'",
+                        (clip["id"],),
+                    )
             await db.execute("DELETE FROM people WHERE id=?", (ident,))
-            for other in affected - {ident}:
-                await db.execute("UPDATE people SET version=version+1 WHERE id=?", (other,))
-                await refresh_profile(db, other)
         self.db.revision += 1
 
     async def voice_profile(self) -> Record | None:
@@ -365,39 +351,79 @@ class MemoryStore:
         self.db.revision += 1
         return await self.voice_status()
 
-    async def add_template(
-        self,
-        person_id: str,
-        embedding: ArrayLike,
-        model: str = "sface-2021dec",
-    ) -> None:
-        array = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        if array.size != 128 or not np.isfinite(array).all() or np.linalg.norm(array) < 1e-8:
-            raise ValueError("Invalid face embedding")
-        array /= np.linalg.norm(array)
+    async def enroll_person(self, thumbnail: bytes | None, samples: list) -> Record:
+        from remind.vision.gallery import normalize_embedding
+
+        ident = uid()
+        vectors = [normalize_embedding(sample) for sample in samples]
+        if not vectors or len(vectors) > 8:
+            raise ValueError("Enrollment requires one to eight face samples")
         async with self.db.transaction() as db:
-            count = (
-                await rows(
-                    db, "SELECT count(*) AS n FROM templates WHERE person_id=?", (person_id,)
-                )
-            )[0]["n"]
-            if count >= 8:
-                return
             await db.execute(
-                "INSERT INTO templates VALUES(?,?,?,?)", (uid(), person_id, model, array.tobytes())
+                "INSERT INTO people(id,created_at,thumbnail) VALUES(?,?,?)",
+                (ident, now(), thumbnail),
+            )
+            for index, vector in enumerate(vectors):
+                await db.execute(
+                    "INSERT INTO templates VALUES(?,?,?,?,?)",
+                    (uid(), ident, "sface-2021dec", vector.tobytes(), int(index < 4)),
+                )
+        self.db.revision += 1
+        person = await self.get_person(ident)
+        assert person is not None
+        return person
+
+    async def update_templates(self, person_id: str, feature: ArrayLike) -> bool:
+        from remind.vision.gallery import normalize_embedding
+
+        vector = normalize_embedding(feature)
+        async with self.db.transaction() as db:
+            fixed = await rows(
+                db, "SELECT embedding FROM templates WHERE person_id=? AND fixed=1", (person_id,)
+            )
+            if (
+                not fixed
+                or max(float(np.frombuffer(r["embedding"], np.float32) @ vector) for r in fixed)
+                < self.template_threshold
+            ):
+                return False
+            adaptive = await rows(
+                db,
+                "SELECT id,embedding FROM templates WHERE person_id=? AND fixed=0 ORDER BY rowid",
+                (person_id,),
+            )
+            if any(
+                float(np.frombuffer(r["embedding"], np.float32) @ vector) > 0.999 for r in adaptive
+            ):
+                return False
+            if len(adaptive) >= 4:
+                await db.execute("DELETE FROM templates WHERE id=?", (adaptive[0]["id"],))
+            await db.execute(
+                "INSERT INTO templates VALUES(?,?,?,?,0)",
+                (uid(), person_id, "sface-2021dec", vector.tobytes()),
             )
         self.db.revision += 1
+        return True
 
     async def templates(self) -> list[Record]:
         async with self.db.transaction() as db:
-            return await rows(db, "SELECT person_id,model,embedding FROM templates")
+            return await rows(db, "SELECT person_id,model,embedding,fixed FROM templates")
 
-    async def start_encounter(self, generation: str) -> str:
-        ident = uid()
+    async def start_session(self, generation: str) -> None:
         async with self.db.transaction() as db:
             await db.execute(
-                "INSERT INTO encounters(id,generation,started_at) VALUES(?,?,?)",
-                (ident, generation, now()),
+                "INSERT OR IGNORE INTO capture_sessions(generation,started_at) VALUES(?,?)",
+                (generation, now()),
+            )
+
+    async def start_encounter(self, generation: str, person_id: str, start_ms: float) -> str:
+        ident = uid()
+        await self.start_session(generation)
+        async with self.db.transaction() as db:
+            await db.execute(
+                "INSERT INTO encounters(id,generation,person_id,start_ms,started_at) "
+                "VALUES(?,?,?,?,?)",
+                (ident, generation, person_id, start_ms, now()),
             )
         return ident
 
@@ -406,43 +432,16 @@ class MemoryStore:
             result = await rows(db, "SELECT * FROM encounters WHERE id=?", (encounter_id,))
             return result[0] if result else None
 
-    async def add_participant(
-        self,
-        encounter: str,
-        person_id: str,
-        track_id: str,
-        start_ms: float,
-    ) -> None:
+    async def close_encounter(self, encounter: str, end_ms: float) -> None:
         async with self.db.transaction() as db:
             await db.execute(
-                "INSERT OR IGNORE INTO participants VALUES(?,?,?,?,NULL)",
-                (encounter, person_id, track_id, start_ms),
-            )
-
-    async def end_participant(self, encounter: str, track_id: str, end_ms: float) -> None:
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE participants SET end_ms=? WHERE encounter_id=? AND track_id=? "
-                "AND end_ms IS NULL",
-                (end_ms, encounter, track_id),
-            )
-
-    async def close_encounter(self, encounter: str, summary: str | None = None) -> None:
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE encounters SET ended_at=?,summary=COALESCE(?,summary) WHERE id=?",
-                (now(), summary, encounter),
+                "UPDATE encounters SET ended_at=?,end_ms=? WHERE id=? AND ended_at IS NULL",
+                (now(), end_ms, encounter),
             )
         self.db.revision += 1
 
-    async def recover_encounters(self) -> None:
-        async with self.db.transaction() as db:
-            await db.execute("UPDATE encounters SET ended_at=? WHERE ended_at IS NULL", (now(),))
-
     async def person_memory(
-        self,
-        ident: str,
-        exclude_encounter_id: str | None = None,
+        self, ident: str, exclude_encounter_id: str | None = None
     ) -> Record | None:
         async with self.db.transaction() as db:
             result = await rows(db, f"SELECT {PERSON_COLUMNS} FROM people WHERE id=?", (ident,))
@@ -451,9 +450,8 @@ class MemoryStore:
             person = public_person(result[0])
             encounters = await rows(
                 db,
-                "SELECT DISTINCT e.* FROM encounters e JOIN participants p ON p.encounter_id=e.id "
-                "WHERE p.person_id=? AND e.ended_at IS NOT NULL AND e.id!=? "
-                "ORDER BY e.started_at DESC LIMIT 30",
+                "SELECT * FROM encounters WHERE person_id=? "
+                "AND ended_at IS NOT NULL AND id!=? ORDER BY started_at DESC LIMIT 30",
                 (ident, exclude_encounter_id or ""),
             )
             facts = await load_facts(db, ident)
@@ -465,10 +463,7 @@ class MemoryStore:
         }
 
     async def recent_context(
-        self,
-        encounter_id: str,
-        limit: int = 40,
-        before_ms: float | None = None,
+        self, encounter_id: str, limit: int = 40, before_ms: float | None = None
     ) -> list[Record]:
         async with self.db.transaction() as db:
             segments = await rows(
@@ -480,163 +475,9 @@ class MemoryStore:
             )
         return [json.loads(segment["data"]) for segment in reversed(segments)]
 
-    async def enqueue_job(self, encounter: str, window_key: str, payload: Record) -> str:
-        async with self.db.transaction() as db:
-            if await rows(db, "SELECT id FROM invalidated_encounters WHERE id=?", (encounter,)):
-                raise ValueError("This encounter was forgotten")
-            existing = await rows(
-                db,
-                "SELECT id,payload FROM jobs WHERE encounter_id=? AND window_key=?",
-                (encounter, window_key),
-            )
-            if existing:
-                old_path = json.loads(existing[0]["payload"]).get("clip_path")
-                new_path = payload.get("clip_path")
-                if new_path and new_path != old_path:
-                    await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (new_path,))
-                return existing[0]["id"]
-            ident = uid()
-            await db.execute(
-                "INSERT INTO jobs(id,encounter_id,window_key,payload,created_at) VALUES(?,?,?,?,?)",
-                (ident, encounter, window_key, json.dumps(payload), now()),
-            )
-            return ident
-
-    async def pending_jobs(self) -> list[Record]:
-        async with self.db.transaction() as db:
-            return await rows(
-                db,
-                "SELECT id,status,attempts,error FROM jobs "
-                "WHERE status IN ('pending','running','failed') ORDER BY created_at",
-            )
-
-    async def retry_job(self, ident: str) -> bool:
-        async with self.db.transaction() as db:
-            result = await db.execute(
-                "UPDATE jobs SET status='pending',attempts=0,next_at=0,error=NULL "
-                "WHERE id=? AND status='failed' AND encounter_id NOT IN "
-                "(SELECT id FROM invalidated_encounters)",
-                (ident,),
-            )
-            return result.rowcount == 1
-
-    async def claim_job(self, worker_id: str, now_ms: int) -> Record | None:
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE jobs SET status='failed',error='Retry limit reached',lease_token=NULL "
-                "WHERE status='running' AND attempts>=3 AND lease_until<?",
-                (now_ms,),
-            )
-            candidates = await rows(
-                db,
-                "SELECT j.* FROM jobs j WHERE j.attempts<3 AND "
-                "((j.status='pending' AND j.next_at<=?) "
-                "OR (j.status='running' AND j.lease_until<?)) "
-                "AND NOT EXISTS(SELECT 1 FROM jobs r WHERE r.encounter_id=j.encounter_id "
-                "AND r.id!=j.id AND r.status='running' AND r.lease_until>=?) "
-                "AND NOT EXISTS(SELECT 1 FROM jobs earlier "
-                "WHERE earlier.encounter_id=j.encounter_id "
-                "AND earlier.created_at<j.created_at AND earlier.status IN ('pending','running')) "
-                "ORDER BY j.created_at LIMIT 1",
-                (now_ms, now_ms, now_ms),
-            )
-            if not candidates:
-                return None
-            job = candidates[0]
-            token = worker_id + ":" + uid()
-            await db.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,lease_token=?,lease_until=? "
-                "WHERE id=?",
-                (token, now_ms + 180000, job["id"]),
-            )
-            return {**job, "lease_token": token, "payload": json.loads(job["payload"])}
-
-    async def renew_lease(self, ident: str, token: str, now_ms: int) -> bool:
-        async with self.db.transaction() as db:
-            result = await db.execute(
-                "UPDATE jobs SET lease_until=? WHERE id=? AND lease_token=? AND status='running'",
-                (now_ms + 180000, ident, token),
-            )
-            return result.rowcount == 1
-
-    async def fail_job(self, ident: str, token: str, error: str, now_ms: int) -> None:
-        async with self.db.transaction() as db:
-            await db.execute(
-                "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,"
-                "error=?,next_at=?,lease_token=NULL "
-                "WHERE id=? AND lease_token=? AND status='running'",
-                (str(error)[:240], now_ms + 5000, ident, token),
-            )
-
-    async def finish_job(self, ident: str, token: str, result: Record) -> bool:
-        async with self.db.transaction() as db:
-            found = await rows(
-                db,
-                "SELECT * FROM jobs WHERE id=? AND lease_token=? AND status='running'",
-                (ident, token),
-            )
-            if not found:
-                return False
-            job, eid = found[0], found[0]["encounter_id"]
-            payload = json.loads(job["payload"])
-            if await rows(db, "SELECT id FROM invalidated_encounters WHERE id=?", (eid,)):
-                return False
-            for pid, version in payload.get("versions", {}).items():
-                person = await rows(db, "SELECT version FROM people WHERE id=?", (pid,))
-                if not person or person[0]["version"] != version:
-                    await db.execute(
-                        "UPDATE jobs SET status='cancelled',lease_token=NULL,"
-                        "error='Person changed' WHERE id=?",
-                        (ident,),
-                    )
-                    return False
-            voice = (await rows(db, "SELECT * FROM user_voice WHERE id=1"))[0]
-            if "voice_version" in payload and payload["voice_version"] != voice["version"]:
-                await db.execute(
-                    "UPDATE jobs SET status='cancelled',lease_token=NULL,"
-                    "error='Voice reference changed' WHERE id=?",
-                    (ident,),
-                )
-                return False
-            visitor_id = payload.get("visitor_id")
-            people = (
-                await rows(db, "SELECT * FROM people WHERE id=?", (visitor_id,))
-                if visitor_id
-                else []
-            )
-            participant = (
-                await rows(
-                    db,
-                    "SELECT 1 FROM participants WHERE encounter_id=? AND person_id=?",
-                    (eid, visitor_id),
-                )
-                if visitor_id
-                else []
-            )
-            allowed = bool(
-                people
-                and participant
-                and voice["embeddings"]
-                and visitor_id in payload.get("versions", {})
-            )
-            await save_conversation_result(
-                db, eid, ident, people[0] if allowed else None, result, payload.get("end_ms", 0)
-            )
-            await db.execute(
-                "UPDATE jobs SET status='done',lease_token=NULL,error=NULL WHERE id=?", (ident,)
-            )
-        self.db.revision += 1
-        return True
-
-    async def processing_metrics(self) -> list[Record]:
-        async with self.db.transaction() as db:
-            result = await rows(db, "SELECT job_id,data FROM job_metrics ORDER BY rowid")
-        return [{"job_id": metric["job_id"], **json.loads(metric["data"])} for metric in result]
-
     async def pending_cleanup(self) -> list[str]:
         async with self.db.transaction() as db:
-            result = await rows(db, "SELECT path FROM cleanup")
-            return [entry["path"] for entry in result]
+            return [r["path"] for r in await rows(db, "SELECT path FROM cleanup")]
 
     async def complete_cleanup(self, path: str) -> None:
         async with self.db.transaction() as db:

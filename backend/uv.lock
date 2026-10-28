@@ -1232,7 +1232,6 @@ dependencies = [
     { name = "openai" },
     { name = "opencv-python-headless" },
     { name = "pydantic-settings" },
-    { name = "scipy" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webrtcvad-wheels" },
 ]
@@ -1265,7 +1264,6 @@ requires-dist = [
     { name = "openai", specifier = ">=1.50.0" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
     { name = "pydantic-settings", specifier = ">=2.4.0" },
-    { name = "scipy", specifier = ">=1.18.1" },
     { name = "speechbrain", marker = "extra == 'speaker'", specifier = "==1.1.2" },
     { name = "torch", marker = "extra == 'speaker'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "extra == 'speaker'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cpu" },

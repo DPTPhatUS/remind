@@ -255,11 +255,16 @@ def score_identity(
         )
         if label is None:
             continue
-        tracks = frame.get("tracks", [])
-        counts.append(len(tracks) == label["face_count"])
+        detections = frame["detections"]
+        counts.append(len(detections) == label["face_count"])
         if label["face_count"] != 1 or label["visitor_id"] is None:
             continue
-        person = tracks[0].get("person_id") if len(tracks) == 1 else None
+        candidate = frame["candidate"]
+        person = (
+            candidate["person_id"]
+            if len(detections) == 1 and candidate and candidate["confirmed"]
+            else None
+        )
         visitor = label["visitor_id"]
         labelled.append((visitor, person))
         if person:

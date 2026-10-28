@@ -75,9 +75,10 @@ def run_case(
             outcome: dict = {"id": encounter.id, "scores": scores, "transport": actual}
             if include_audio:
                 assert isinstance(encounter, VideoEncounter)
-                job_ids = {u.get("receipt", {}).get("job_id") for u in actual["uploads"]}
+                clip_ids = {u.get("receipt", {}).get("clip_id") for u in actual["uploads"]}
+                job_ids = {j["id"] for j in database["jobs"] if j["clip_id"] in clip_ids}
                 segments = [
-                    {**row["data"], "current_encounter": row["job_id"] in job_ids}
+                    {**row["data"], "current_encounter": row["clip_id"] in clip_ids}
                     for row in database["transcripts"]
                 ]
                 current = [s for s in segments if s["current_encounter"]]
@@ -122,6 +123,9 @@ def run_case(
                             "voice_ms",
                             "extraction_ms",
                             "verification_ms",
+                            "attribution_wait_ms",
+                            "receipt_to_audio_ms",
+                            "commit_ms",
                             "processing_ms",
                         )
                     },
@@ -133,9 +137,16 @@ def run_case(
                     f"{encounter.id}: replay error, failed uploads, or unfinished/failed jobs; "
                     "inspect transport.json"
                 )
-            outcome["unassociated_clips"] = sum(
-                u.get("receipt", {}).get("status") == "no_participants" for u in actual["uploads"]
-            )
+            if include_audio:
+                outcome["association"] = {
+                    reason: sum(s.get("association", {}).get("reason") == reason for s in current)
+                    for reason in sorted(
+                        {s.get("association", {}).get("reason", "unknown") for s in current}
+                    )
+                }
+                outcome["unattributed_turns"] = sum(
+                    s.get("association", {}).get("status") != "attributed" for s in current
+                )
             result["outcomes"].append(outcome)
             write_json(outcome, directory / "observed.json")
     return result

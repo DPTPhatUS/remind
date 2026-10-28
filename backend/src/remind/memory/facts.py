@@ -8,6 +8,7 @@ from uuid import uuid4
 import aiosqlite
 
 from remind.database import Record, rows
+from remind.memory.association import eligible_source
 
 IDENTITY_FIELDS = {"name", "relationship", "age", "notes"}
 # Exclusivity belongs to the attribute, not its whole category: a visitor may
@@ -152,6 +153,7 @@ async def save_claim(
             or not quote.strip()
             or quote not in segment.get("text", "")
             or segment.get("role") not in {"user", "visitor"}
+            or not eligible_source(segment, person["id"], encounter_id)
         ):
             return
         validated.append({"segment_id": source["segment_id"], "quote": quote})

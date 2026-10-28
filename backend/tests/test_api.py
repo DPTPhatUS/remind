@@ -69,7 +69,7 @@ def test_retained_final_clip_can_retry_after_stop(tmp_path, monkeypatch):
             content=b"injected clip",
         )
         assert response.status_code == 200
-        assert response.json()["status"] == "queued"
+        assert response.json()["status"] == "transcribing"
 
 
 def test_only_one_live_session_and_stale_generation_cannot_upload(tmp_path, monkeypatch):
@@ -157,3 +157,58 @@ def test_failed_voice_replacement_preserves_existing_reference(tmp_path, monkeyp
         current = client.get("/api/user/voice").json()
         assert current["ready"] is True
         assert current["version"] == original["version"]
+
+
+def test_http_startup_preserves_profile_and_return_recognition_after_restart(tmp_path, monkeypatch):
+    import json
+    import struct
+
+    import numpy as np
+
+    class Vision:
+        def __init__(self, *args):
+            pass
+
+        def detect(self, data):
+            return [
+                {
+                    "box": [0.3, 0.2, 0.3, 0.4],
+                    "quality": True,
+                    "embedding": np.eye(128, dtype=np.float32)[0],
+                    "thumbnail": b"face",
+                }
+            ]
+
+    def observe(client, generation, count):
+        result = None
+        with client.websocket_connect(
+            f"/api/live/{generation}/vision", headers={"origin": "http://127.0.0.1:5173"}
+        ) as socket:
+            for sequence in range(count):
+                header = json.dumps(
+                    {
+                        "version": 1,
+                        "generation": generation,
+                        "sequence": sequence,
+                        "capture_ms": sequence * 100,
+                    }
+                ).encode()
+                socket.send_bytes(struct.pack(">I", len(header)) + header + b"image")
+                result = socket.receive_json()
+        return result
+
+    monkeypatch.setattr("remind.runtime.OpenCVVision", Vision)
+    settings = Settings(data_dir=tmp_path, openai_api_key="")
+    with TestClient(create_app(settings)) as client:
+        generation = client.post("/api/session").json()["generation"]
+        person_id = observe(client, generation, 22)["encounter"]["visitor_id"]
+        response = client.patch(
+            f"/api/people/{person_id}", json={"version": 1, "fields": {"name": "Anna"}}
+        )
+        assert response.status_code == 200
+    with TestClient(create_app(settings)) as restarted:
+        assert restarted.get(f"/api/people/{person_id}").json()["name"] == "Anna"
+        generation = restarted.post("/api/session").json()["generation"]
+        memory = observe(restarted, generation, 3)["encounter"]["memory"]
+        assert memory["id"] == person_id and memory["name"] == "Anna"
+        assert memory["last_encounter"] is not None

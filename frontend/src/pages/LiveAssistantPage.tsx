@@ -1,7 +1,7 @@
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useLiveSession } from "@/features/live/session";
-import type { FaceTrack } from "@/lib/api-types";
+import type { FaceBox, LiveEncounter } from "@/lib/api-types";
 
 const cameraStatusLabels = {
   idle: "Camera is off",
@@ -10,7 +10,7 @@ const cameraStatusLabels = {
   saving: "Saving conversation…",
 };
 
-function reminderLeft([left, , width]: FaceTrack["box"]) {
+function reminderLeft([left, , width]: FaceBox) {
   const cardWidth = "var(--face-card-width)";
   const preferredLeft =
     left > 0.5
@@ -19,36 +19,36 @@ function reminderLeft([left, , width]: FaceTrack["box"]) {
   return `clamp(8px, ${preferredLeft}, calc(100% - ${cardWidth} - 8px))`;
 }
 
-function VisitorReminder({ track }: { track: FaceTrack }) {
+function VisitorReminder({ encounter }: { encounter: LiveEncounter }) {
+  const memory = encounter.memory;
   return (
     <>
       <strong>
-        {track.memory?.name ??
-          (track.person_id
+        {memory?.name ??
+          (encounter.visitor_id
             ? "Someone you’ve met"
-            : track.state === "ambiguous"
-              ? "Still identifying…"
-              : "Getting to know this person")}
+            : "Getting to know this person")}
       </strong>
-      {track.memory?.relationship && <span>{track.memory.relationship}</span>}
-      {track.memory?.age && <span>Age stated: {track.memory.age}</span>}
-      {track.memory?.highlights.length ? (
+      {encounter.state === "absent" && <small>Temporarily out of view</small>}
+      {encounter.state === "paused" && (
+        <small>Personal details learning is paused</small>
+      )}
+      {memory?.relationship && <span>{memory.relationship}</span>}
+      {memory?.age && <span>Age stated: {memory.age}</span>}
+      {memory?.highlights.length ? (
         <ul className="face-highlights">
-          {track.memory.highlights.slice(0, 3).map((highlight) => (
+          {memory.highlights.slice(0, 3).map((highlight) => (
             <li key={highlight}>{highlight}</li>
           ))}
         </ul>
       ) : null}
-      {track.memory?.last_encounter && (
+      {memory?.last_encounter && (
         <p>
           <small>
             Last met{" "}
-            {new Date(
-              track.memory.last_encounter.started_at,
-            ).toLocaleDateString()}
+            {new Date(memory.last_encounter.started_at).toLocaleDateString()}
           </small>
-          {track.memory.last_encounter.summary ??
-            "No conversation summary recorded."}
+          {memory.last_encounter.summary ?? "No conversation summary recorded."}
         </p>
       )}
     </>
@@ -68,7 +68,7 @@ export function LiveAssistantPage() {
     retryUpload,
     downloadClip,
     retryJobs,
-    tracks,
+    view,
     diagnostics,
     start,
     stop,
@@ -125,37 +125,29 @@ export function LiveAssistantPage() {
               </p>
             </div>
           )}
-          {tracks.map((track) => (
-            <Fragment key={track.track_id}>
-              <div
-                className={`face-box ${track.person_id ? "known" : ""}`}
-                style={{
-                  left: `${track.box[0] * 100}%`,
-                  top: `${track.box[1] * 100}%`,
-                  width: `${track.box[2] * 100}%`,
-                  height: `${track.box[3] * 100}%`,
-                }}
-              />
-              <div
-                className="face-card"
-                style={{
-                  left: reminderLeft(track.box),
-                }}
-              >
-                <VisitorReminder track={track} />
-              </div>
-            </Fragment>
+          {view?.detections.map((detection, index) => (
+            <div key={index} className={`face-box ${view.candidate?.confirmed ? "known" : ""}`}
+              style={{ left: `${detection.box[0] * 100}%`, top: `${detection.box[1] * 100}%`,
+                width: `${detection.box[2] * 100}%`, height: `${detection.box[3] * 100}%` }} />
           ))}
+          {view && (view.encounter.memory || view.candidate) && (
+            <div
+              className="face-card"
+              style={{
+                left: view.candidate && view.encounter.state !== "paused"
+                  ? reminderLeft(view.candidate.box)
+                  : "12px",
+              }}
+            >
+              <VisitorReminder encounter={view.encounter} />
+            </div>
+          )}
         </div>
       </div>
-      {tracks.length > 0 && (
-        <div className="mobile-reminders">
-          {tracks.map((track) => (
-            <article className="visitor-reminder" key={track.track_id}>
-              <VisitorReminder track={track} />
-            </article>
-          ))}
-        </div>
+      {view && (view.encounter.memory || view.candidate) && (
+        <div className="mobile-reminders"><article className="visitor-reminder">
+          <VisitorReminder encounter={view.encounter} />
+        </article></div>
       )}
       <div className="live-footer">
         <span className={`status-dot ${status === "live" ? "active" : ""}`} />

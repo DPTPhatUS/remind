@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from remind.database import Record
+from remind.memory.association import eligible_source
 
 
 class Evidence(BaseModel):
@@ -107,6 +108,9 @@ def validate_extraction(
     verification: Record,
     existing_facts: Sequence[Record] = (),
     current_ids: Collection[str] | None = None,
+    *,
+    visitor_id: str | None,
+    encounter_id: str,
 ) -> Record:
     """Allow only separately verified claims with genuine visitor evidence.
 
@@ -158,6 +162,8 @@ def validate_extraction(
             if (
                 source is None
                 or source.get("role") not in {"user", "visitor"}
+                or not visitor_id
+                or not eligible_source(source, visitor_id, encounter_id)
                 or not quote
                 or quote not in source.get("text", "")
             ):

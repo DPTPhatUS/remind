@@ -11,11 +11,16 @@ configuration is in `.env` (see [.env.example](.env.example)).
 
 Vision and conversation work use separate executors. The latest-only vision queue
 prevents stale overlays; conversation jobs preserve capture-time visitor and voice
-reference versions. Leases, transactional writes, and idempotent windows protect
+reference versions. Uploads are accepted before identification. Audio jobs save
+transcripts once; learning jobs associate complete turns with encounters. A single
+candidate supports automatic recognition/enrollment, and an encounter allows five
+seconds of temporary absence. Competing/multiple faces pause learning.
+
+Leases, transactional writes, and idempotent windows protect
 retries and restarts. Source transcripts and structured evidence support correction
 and forgetting. No video is decoded for voice recognition.
 
 Startup creates the current schema and recovers unfinished work. Normal restarts
 preserve memories. Older schemas are not supported; there is no migration layer.
 
-[API contract](docs/API.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)
+[API contract](docs/API.md) · [Attribution and cleanup](docs/ATTRIBUTION.md) · [Evaluation](../docs/testing/realtime-memory-evaluation.md)

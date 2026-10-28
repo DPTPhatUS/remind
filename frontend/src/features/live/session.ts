@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type {
-  FaceTrack,
+  LiveView,
   SessionStatus,
   VisionMessage,
   VoiceStatus,
@@ -32,7 +32,7 @@ export function useLiveSession() {
   const retainedClips = useRef<ClipRecorder | null>(null);
   const [jobsStatus, setJobsStatus] = useState("");
   const [hasFailedJobs, setHasFailedJobs] = useState(false);
-  const [tracks, setTracks] = useState<FaceTrack[]>([]);
+  const [view, setView] = useState<LiveView | null>(null);
   const [diagnostics, setDiagnostics] = useState({
     fps: 0,
     latency: 0,
@@ -56,7 +56,7 @@ export function useLiveSession() {
     current.stream?.getTracks().forEach((track) => track.stop());
     current.socket?.close();
     if (video.current) video.current.srcObject = null;
-    setTracks([]);
+    setView(null);
     try {
       await flushing;
       if (current.generation)
@@ -124,7 +124,7 @@ export function useLiveSession() {
           return;
         lastSequence = message.sequence;
         lastResult.current = now;
-        setTracks(message.tracks);
+        setView(message);
         setDiagnostics({
           fps: message.processed_fps,
           latency: now - message.capture_ms,
@@ -200,10 +200,13 @@ export function useLiveSession() {
         if (!active) return;
         const failed = jobs.filter((job) => job.status === "failed").length;
         setHasFailedJobs(failed > 0);
+        const waiting = jobs.filter((job) => job.status === "waiting_for_attribution").length;
         setJobsStatus(
           failed
             ? `${failed} conversation clip(s) could not be processed. Check your connection or service setup, then retry.`
-            : jobs.length
+            : waiting
+              ? "Conversation transcribed; waiting to identify the visitor."
+              : jobs.length
               ? `${jobs.length} conversation clip(s) processing.`
               : "",
         );
@@ -221,8 +224,33 @@ export function useLiveSession() {
     }
     void pollJobs();
     const timer = window.setInterval(() => {
-      if (performance.now() - lastResult.current > 500)
-        setTracks((current) => (current.length ? [] : current));
+      const now = performance.now();
+      if (now - lastResult.current > 500) {
+        setView((current) => {
+          if (!current) return current;
+          const expired =
+            current.encounter.absence_deadline_ms !== null &&
+            now >= current.encounter.absence_deadline_ms;
+          if (
+            !current.detections.length &&
+            current.encounter.reason === "stale_observations" &&
+            (!expired || !current.encounter.memory)
+          ) return current;
+          return {
+            detections: [],
+            candidate: null,
+            encounter: {
+              ...current.encounter,
+              state: "paused",
+              learning_available: false,
+              reason: "stale_observations",
+              memory: expired ? null : current.encounter.memory,
+              visitor_id: expired ? null : current.encounter.visitor_id,
+              id: expired ? null : current.encounter.id,
+            },
+          };
+        });
+      }
     }, 250);
     return () => {
       active = false;
@@ -258,7 +286,7 @@ export function useLiveSession() {
     retryUpload,
     downloadClip,
     retryJobs,
-    tracks,
+    view,
     diagnostics,
     start,
     stop,
