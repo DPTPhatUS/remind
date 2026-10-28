@@ -13,6 +13,45 @@ test.use({
   permissions: ["camera", "microphone"],
 });
 
+test("failures and skips stay visible without a processing retry control", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let response: unknown = {};
+    if (path === "/api/user/voice") response = { ready: true };
+    if (path === "/api/people") response = [];
+    if (path === "/api/jobs") response = [
+      { id: "audio-failed", kind: "audio", status: "failed" },
+      { id: "learning-failed", kind: "learning", status: "failed" },
+      { id: "late-audio", kind: "audio", status: "skipped" },
+      { id: "later-learning", kind: "learning", status: "pending" },
+    ];
+    expect(path).not.toMatch(/\/jobs\/.*\/retry$/);
+    await route.fulfill({ json: response });
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  await expect(page).toHaveTitle(/Remind/);
+  await expect(page.getByRole("heading", { name: "Your view" })).toBeVisible();
+  await expect(page.getByText("Learning continues with later recordings.", { exact: false })).toBeVisible();
+  await expect(page.getByText("1 late recording(s) skipped.", { exact: false })).toBeVisible();
+  await expect(page.getByText("1 conversation clip(s) processing.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry failed conversations" })).toHaveCount(0);
+  await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/remind-processing-status.png", fullPage: true });
+  await page.getByRole("link", { name: "People", exact: true }).click();
+  await expect(page).toHaveURL(/\/people$/);
+  await page.getByRole("link", { name: "Live view", exact: true }).click();
+  await expect(page.getByText("1 late recording(s) skipped.", { exact: false })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "/tmp/remind-processing-status-mobile.png", fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test("helper voice setup, automatic learning, return reminder, correction, and forget", async ({
   page,
 }) => {

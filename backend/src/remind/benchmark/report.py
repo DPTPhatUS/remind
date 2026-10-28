@@ -117,11 +117,29 @@ def write_report(result: BenchmarkReport, output: Path) -> None:
             transport = outcome.get("transport")
             if transport is not None:
                 uploads = transport.get("uploads", [])
-                jobs = sum(bool(u.get("receipt", {}).get("clip_id")) for u in uploads)
+                skipped = {
+                    u["receipt"]["clip_id"] for u in uploads
+                    if u.get("receipt", {}).get("status") == "skipped"
+                }
+                jobs = len({
+                    u["receipt"]["clip_id"] for u in uploads
+                    if u.get("receipt", {}).get("clip_id")
+                    and u["receipt"]["status"] != "skipped"
+                })
                 lines.append(f"| Frames sent | {transport.get('frames_sent', 0)} |")
                 lines.append(f"| Frames skipped late | {transport.get('frames_skipped_late', 0)} |")
                 if result["kind"] == "video":
                     lines.append(f"| Queued audio jobs | {jobs} |")
+                    if skipped:
+                        lines.append(f"| Skipped recordings | {len(skipped)} |")
+                    processing = outcome.get("processing_jobs", [])
+                    for label, states in (
+                        ("Failed processing jobs", {"failed"}),
+                        ("Unfinished processing jobs", {"pending", "running"}),
+                    ):
+                        count = sum(j["status"] in states for j in processing)
+                        if count:
+                            lines.append(f"| {label} | {count} |")
                     lines.append(f"| Unattributed turns | {outcome.get('unattributed_turns', 0)} |")
                     lines.append(f"| Transcribed turns | {len(outcome.get('segments', []))} |")
                     for reason, count in outcome.get("association", {}).items():

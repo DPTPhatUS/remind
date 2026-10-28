@@ -37,12 +37,19 @@ class JobQueue:
                       SELECT 1 FROM clips earlier
                       WHERE earlier.generation=c.generation AND earlier.start_ms<c.start_ms
                         AND earlier.cancelled=0
-                        AND (earlier.audio_done=0 OR earlier.attribution_final=0)
+                        AND (
+                          (earlier.audio_done=1 AND earlier.attribution_final=0)
+                          OR (earlier.audio_done=0 AND EXISTS (
+                            SELECT 1 FROM jobs audio
+                            WHERE audio.clip_id=earlier.id AND audio.kind='audio'
+                              AND audio.status IN ('pending','running')
+                          ))
+                        )
                     )
                     AND NOT EXISTS (
                       SELECT 1 FROM jobs e JOIN clips ec ON ec.id=e.clip_id
                       WHERE e.encounter_id=j.encounter_id AND e.id!=j.id
-                        AND ec.start_ms<c.start_ms AND e.status IN ('pending','running','failed')
+                        AND ec.start_ms<c.start_ms AND e.status IN ('pending','running')
                     )
                   ))
                 ORDER BY c.received_ms,j.created_at,j.rowid LIMIT 1
@@ -130,22 +137,12 @@ class JobQueue:
                 (error[:240], stamp + 5000, ident, token),
             )
 
-    async def retry(self, ident: str) -> bool:
-        async with self.db.transaction() as db:
-            result = await db.execute(
-                "UPDATE jobs SET status='pending',attempts=0,next_at=0,error=NULL "
-                "WHERE id=? AND status='failed' "
-                "AND clip_id IN (SELECT id FROM clips WHERE cancelled=0)",
-                (ident,),
-            )
-            return result.rowcount == 1
-
     async def pending(self) -> list[Record]:
         async with self.db.transaction() as db:
             jobs = await rows(
                 db,
                 "SELECT id,clip_id,kind,status,attempts,error FROM jobs "
-                "WHERE status IN ('pending','running','failed') ORDER BY created_at",
+                "WHERE status IN ('pending','running','failed','skipped') ORDER BY created_at",
             )
             waiting = await rows(
                 db,

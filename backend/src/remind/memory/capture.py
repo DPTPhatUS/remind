@@ -65,27 +65,46 @@ class CaptureStore:
                 clip_id = existing[0]["id"]
             else:
                 clip_id = uid()
+                late = input_kind == "media" and bool(
+                    await rows(
+                        db,
+                        "SELECT 1 FROM clips later JOIN jobs learning ON learning.clip_id=later.id "
+                        "WHERE later.generation=? AND later.start_ms>? "
+                        "AND learning.kind='learning' AND learning.attempts>0 LIMIT 1",
+                        (generation, start_ms),
+                    )
+                )
+                if late and path:
+                    await db.execute("INSERT OR IGNORE INTO cleanup VALUES(?)", (path,))
                 await db.execute(
                     "INSERT INTO clips(id,generation,window_key,start_ms,end_ms,path,"
-                    "received_ms,expires_ms,voice_version,timeline,input_kind) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "received_ms,expires_ms,voice_version,timeline,input_kind,attribution_final) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         clip_id,
                         generation,
                         window_key,
                         start_ms,
                         end_ms,
-                        path,
+                        None if late else path,
                         stamp,
                         stamp + 86400000,
                         voice_version,
-                        json.dumps(timeline),
+                        "[]" if late else json.dumps(timeline),
                         input_kind,
+                        int(late),
                     ),
                 )
                 await db.execute(
-                    "INSERT INTO jobs(id,clip_id,kind,payload,created_at) VALUES(?,?,'audio',?,?)",
-                    (uid(), clip_id, "{}", now()),
+                    "INSERT INTO jobs(id,clip_id,kind,payload,created_at,status,error) "
+                    "VALUES(?,?,'audio','{}',?,?,?)",
+                    (
+                        uid(),
+                        clip_id,
+                        now(),
+                        "skipped" if late else "pending",
+                        "Recording arrived after newer learning started" if late else None,
+                    ),
                 )
         return await self.receipt(clip_id)
 
@@ -161,8 +180,14 @@ class CaptureStore:
             )[0]["n"]
         if clip["cancelled"]:
             state = "cancelled"
+        elif any(j["status"] == "skipped" for j in jobs):
+            state = "skipped"
         elif any(j["status"] == "failed" for j in jobs):
             state = "failed"
+        elif not clip["audio_done"] and any(
+            j["kind"] == "audio" and j["status"] == "cancelled" for j in jobs
+        ):
+            state = "cancelled"
         elif not clip["audio_done"]:
             state = "transcribing"
         elif not clip["attribution_final"]:
@@ -467,7 +492,7 @@ class CaptureStore:
                 )
                 await db.execute(
                     "UPDATE jobs SET status='cancelled',lease_token=NULL,error='Media expired' "
-                    "WHERE clip_id=? AND kind='audio' AND status IN ('pending','running','failed')",
+                    "WHERE clip_id=? AND kind='audio' AND status IN ('pending','running')",
                     (clip["id"],),
                 )
             await db.execute(

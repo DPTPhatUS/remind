@@ -80,6 +80,23 @@ function startRecording(send: ReturnType<typeof vi.fn>) {
   return { recording, onStatus, onPaused };
 }
 
+it("reports skipped uploads, releases the clip, and continues recording", async () => {
+  const send = vi.fn().mockResolvedValue({
+    ok: true, json: async () => ({ clip_id: "late", status: "skipped" }),
+  });
+  const { recording, onStatus, onPaused } = startRecording(send);
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(onStatus).toHaveBeenLastCalledWith(
+    "Late recording skipped because newer conversation processing already started.",
+  );
+  expect(onPaused).toHaveBeenLastCalledWith(false);
+  await recording.retry();
+  expect(send).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(send).toHaveBeenCalledTimes(2);
+  await recording.stop();
+});
+
 it("retries a retained clip after recording has stopped without duplicate requests", async () => {
   let finishUpload: (response: unknown) => void = () => {};
   const send = vi.fn()

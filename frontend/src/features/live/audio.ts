@@ -65,9 +65,11 @@ export function recordClips(
       retained = null;
       onPaused(false);
       onStatus(
-        receipt.status === "waiting_for_attribution"
-          ? "Conversation transcribed; waiting to identify the visitor."
-          : "Conversation received for processing.",
+        receipt.status === "skipped"
+          ? "Late recording skipped because newer conversation processing already started."
+          : receipt.status === "waiting_for_attribution"
+            ? "Conversation transcribed; waiting to identify the visitor."
+            : "Conversation received for processing.",
       );
       if (active) begin();
     } catch (error) {

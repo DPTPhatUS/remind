@@ -441,17 +441,38 @@ class MemoryStore:
         }
 
     async def recent_context(
-        self, encounter_id: str, limit: int = 40, before_ms: float | None = None
+        self,
+        encounter_id: str,
+        limit: int = 40,
+        before_ms: float | None = None,
+        *,
+        after_ms: float | None = None,
     ) -> list[TranscriptTurn]:
         async with self.db.transaction() as db:
             segments = await rows(
                 db,
                 "SELECT data FROM transcripts WHERE encounter_id=? "
                 "AND (? IS NULL OR json_extract(data,'$.end_ms')<=?) "
+                "AND (? IS NULL OR json_extract(data,'$.start_ms')>=?) "
                 "ORDER BY start_ms DESC,rowid DESC LIMIT ?",
-                (encounter_id, before_ms, before_ms, max(0, min(200, limit))),
+                (encounter_id, before_ms, before_ms, after_ms, after_ms, max(0, min(200, limit))),
             )
         return [json.loads(segment["data"]) for segment in reversed(segments)]
+
+    async def latest_audio_gap(self, encounter_id: str, before_ms: float) -> float | None:
+        async with self.db.transaction() as db:
+            found = await rows(
+                db,
+                """
+                SELECT max(c.end_ms) AS end_ms FROM clips c
+                JOIN jobs audio ON audio.clip_id=c.id AND audio.kind='audio'
+                JOIN encounters encounter ON encounter.generation=c.generation
+                WHERE encounter.id=? AND c.start_ms<? AND c.end_ms>encounter.start_ms
+                  AND c.audio_done=0 AND audio.status IN ('failed','cancelled')
+                """,
+                (encounter_id, before_ms),
+            )
+        return found[0]["end_ms"]
 
     async def pending_cleanup(self) -> list[str]:
         async with self.db.transaction() as db:

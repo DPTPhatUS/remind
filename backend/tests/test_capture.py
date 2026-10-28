@@ -144,7 +144,7 @@ async def test_leases_retries_and_old_worker_cannot_finish(store):
     last = await captures.jobs.claim("last", later + 6000)
     await captures.jobs.fail(last["id"], last["lease_token"], "failure", later + 6000)
     assert (await captures.jobs.pending())[0]["status"] == "failed"
-    assert await captures.jobs.retry(last["id"])
+    assert await captures.jobs.claim("later", later + 12000) is None
 
 
 async def test_attribution_deadline_and_24_hour_retention(store):
@@ -356,7 +356,7 @@ async def test_clip_cancellation_is_atomic_and_revokes_pending_work(store):
     assert await store.pending_cleanup() == ["clip.wav"]
     assert not await captures.jobs.renew(job["id"], job["lease_token"], milliseconds())
     assert not await captures.finish_audio(job, audio())
-    assert not await captures.jobs.retry(job["id"])
+    assert await captures.jobs.claim("later") is None
 
 
 async def test_failed_learning_completion_rolls_back_all_claim_writes(store, monkeypatch):

@@ -20,7 +20,8 @@ evidence and historical-state errors. Exact unmatched wording needs evidence
 review. State sample counts, source quality, repeated recordings, incomplete
 annotations and unmeasured stages. Empty output never establishes accuracy.
 
-Ordinary application tests cover restart recovery, retry idempotency, manual
+Ordinary application tests cover restart recovery, automatic-attempt idempotency,
+terminal failure ordering, late-upload skipping, manual
 corrections, forgetting and voice replacement during pending work, capture-time
 visitor changes, multiple faces, invalid evidence and browser behavior. These
 regression tests establish software behavior, not model accuracy.

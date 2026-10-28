@@ -194,7 +194,7 @@ export function useLiveSession() {
       });
     return () => { active = false; };
   }, []);
-  const { jobsStatus, hasFailedJobs, retryJobs } = useConversationJobs(setError);
+  const jobsStatus = useConversationJobs();
   useEffect(() => {
     const timer = window.setInterval(() => {
       const now = performance.now();
@@ -219,11 +219,9 @@ export function useLiveSession() {
     memoryStatus,
     voiceReady,
     jobsStatus,
-    hasFailedJobs,
     uploadPaused,
     retryUpload,
     downloadClip,
-    retryJobs,
     view,
     diagnostics,
     start,

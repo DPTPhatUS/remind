@@ -143,6 +143,42 @@ def test_visual_failures_remain_explicit(tmp_path, monkeypatch, failure):
     assert len(result["outcomes"]) == 1
 
 
+@pytest.mark.parametrize("status", ["failed", "skipped", "pending"])
+def test_video_reports_terminal_outcomes_separately_from_unfinished_work(
+    tmp_path, monkeypatch, status
+):
+    setup_backend(monkeypatch)
+    replay = visual.replay_encounter
+    job = {"id": "job", "clip_id": "clip", "kind": "audio", "status": status}
+
+    async def observed(*args, **kwargs):
+        result = await replay(*args, **kwargs)
+        result["remaining_jobs"] = [job]
+        if status == "skipped":
+            result["uploads"][0]["receipt"]["status"] = "skipped"
+        return result
+
+    monkeypatch.setattr(visual, "replay_encounter", observed)
+    monkeypatch.setattr(visual, "snapshot", lambda _: {
+        "jobs": [job], "transcripts": [], "job_metrics": [],
+    })
+    value = encounter()
+    value["facts"] = [
+        {"id": "work", "subject": "visitor", "predicate": "occupation", "value": "teacher"}
+    ]
+    result = visual.run_case(
+        VideoCase.model_validate({"id": "video", "encounters": [value]}),
+        tmp_path, Settings(data_dir=tmp_path), include_audio=True,
+    )
+    assert result["status"] == "failed"
+    outcome = result["outcomes"][0]
+    assert outcome["processing_jobs"] == [job]
+    assert outcome["segments"] == []
+    assert outcome["scores"]["memory"]["fact_coverage"] == {
+        "numerator": 0, "denominator": 1, "rate": 0,
+    }
+
+
 def test_video_results_keep_roles_associations_evidence_and_stage_scope_separate(
     tmp_path, monkeypatch
 ):
@@ -178,7 +214,7 @@ def test_video_results_keep_roles_associations_evidence_and_stage_scope_separate
         visual,
         "snapshot",
         lambda _: {
-            "jobs": [{"id": "job", "clip_id": "clip"}],
+            "jobs": [{"id": "job", "clip_id": "clip", "kind": "learning", "status": "done"}],
             "transcripts": [
                 {
                     "clip_id": "old-clip",

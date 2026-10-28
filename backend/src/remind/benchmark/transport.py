@@ -240,7 +240,8 @@ async def replay_encounter(
                 while True:
                     await observe()
                     active = [
-                        j for j in result["remaining_jobs"] if j["status"] in {"pending", "running"}
+                        j for j in result["remaining_jobs"]
+                        if j["status"] in {"pending", "running", "waiting_for_attribution"}
                     ]
                     if not active or loop.time() >= deadline:
                         result["drain_timed_out"] = bool(active)

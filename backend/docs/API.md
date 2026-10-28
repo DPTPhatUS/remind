@@ -16,8 +16,7 @@ time. Face templates and user voice representations are never returned publicly.
 | PATCH | `/people/{id}/facts/{fact}` | `{version,value}`; correction preserves history |
 | DELETE | `/people/{id}/facts/{fact}` | `{version}`; suppresses automatic recurrence |
 | DELETE | `/people/{id}` | Stops active capture and forgets sources, memories and templates |
-| GET | `/jobs` | Active/failed audio or learning jobs, plus attribution waits |
-| POST | `/jobs/{id}/retry` | Retries retained failed work; invalid work returns 409 |
+| GET | `/jobs` | Active, failed, or skipped processing jobs, plus attribution waits |
 | POST | `/session` | `generation,memory_available,voice_ready,profile_learning_available` |
 | POST | `/session/{generation}/stop` | Finalizes attribution and closes the encounter; jobs remain durable |
 | POST | `/live/{generation}/clips?metadata=...` | Records a clip regardless of visitor identity |
@@ -48,9 +47,18 @@ A successful upload returns:
 
 `(generation,window_id)` is idempotent. Receipts can report `transcribing`,
 `waiting_for_attribution`, `learning`, `completed`,
-`completed_without_attribution`, `failed`, or `cancelled`. An unrecognized
-visitor is never an upload rejection. Ordinary HTTP validation, storage and
-session-access errors still apply.
+`completed_without_attribution`, `failed`, `skipped`, or `cancelled`. An
+unrecognized visitor is never an upload rejection. Ordinary HTTP validation,
+storage and session-access errors still apply.
+
+A new media window arriving after a later window's learning job has been attempted
+in the same generation returns `skipped`. Its audio job has zero attempts and the
+error `Recording arrived after newer learning started`. Intake records the receipt
+and queues the uploaded media for deletion atomically; no models process it.
+Duplicates return the original receipt, including failures or skips, without
+reopening work. Deliberately skipped windows do not rewind earlier learning or
+create retrospective context changes. Trusted transcript benchmarks use their
+explicit encounter association and are exempt from this media-only intake rule.
 
 Audio jobs persist timestamped transcript turns and original voice roles before
 learning. A clip may produce learning jobs for several encounters. Only complete
@@ -65,15 +73,33 @@ retained with memories. There is no public unattributed-history endpoint.
 
 `GET /jobs` returns `id,clip_id,kind,status,attempts,error`. Job kinds are `audio`
 and `learning`; a pending attribution item has kind `attribution` and status
-`waiting_for_attribution`. Only failed processing jobs can be retried.
+`waiting_for_attribution`. Failed and skipped jobs remain observable, but only
+`pending`, `running`, and `waiting_for_attribution` count as unfinished work.
 
 Each processing job has up to three automatic attempts, with a five-second retry
-delay. A running job holds a three-minute lease, renewed every 30 seconds. A
-manual retry resets a failed job's attempt count when its clip is still retained
-and not cancelled. These are application retries; an external provider request
+delay. A running job holds a three-minute lease, renewed every 30 seconds.
+Attempts never reset; exhausted failures are final. Processing has no manual
+retry interface. Browser upload retries and retained-clip download remain
+available because they recover delivery, not processing. These are application
+retries; an external provider request
 may be repeated after a crash. No exactly-once provider execution is promised.
 
 Learning is serialized within an encounter and waits for earlier relevant work.
+Pending/running audio, including scheduled automatic retries, still blocks later
+learning until it settles. Audio that exhausts all attempts or is cancelled on
+expiration releases that dependency immediately; `audio_done` remains false.
+Extraction that exhausts its attempts also releases later learning. Its saved,
+associated transcript remains available as context, and successful transcription
+is never repeated for an extraction retry. A failed batch's facts may still be
+missed: later claims must retain current-batch evidence.
+
+Missing audio forms a context gap. Later extraction cannot use dialogue from
+before the gap or a summary that predates it to interpret a short answer. Existing
+profile facts remain available. The boundary is derived from an incomplete
+transcription with a failed or cancelled audio job. Final failures cannot be
+reopened, so no recovery flags are needed. Extraction failure creates no audio
+gap. Expiration removes recordings without overwriting a terminal provider error.
+
 Restart recovers durable jobs and saved transcripts, and finalizes unresolved
 live attribution without inventing continuity. Claim writes, summary updates,
 job metrics and job completion commit together. Optional commit-duration timing

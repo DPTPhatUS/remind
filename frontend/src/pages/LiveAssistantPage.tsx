@@ -63,11 +63,9 @@ export function LiveAssistantPage() {
     memoryStatus,
     voiceReady,
     jobsStatus,
-    hasFailedJobs,
     uploadPaused,
     retryUpload,
     downloadClip,
-    retryJobs,
     view,
     diagnostics,
     start,
@@ -172,11 +170,6 @@ export function LiveAssistantPage() {
             Download unsaved clip
           </button>
         </div>
-      )}
-      {hasFailedJobs && (
-        <button className="secondary" onClick={() => void retryJobs()}>
-          Retry failed conversations
-        </button>
       )}
       <details className="diagnostics">
         <summary>Performance and memory status</summary>

@@ -3,7 +3,7 @@
 from typing import Literal, NotRequired, TypedDict
 
 VoiceRole = Literal["user", "visitor", "uncertain"]
-JobStatus = Literal["pending", "running", "done", "failed", "cancelled"]
+JobStatus = Literal["pending", "running", "done", "failed", "cancelled", "skipped"]
 
 
 class PendingAssociation(TypedDict):

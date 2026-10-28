@@ -284,7 +284,7 @@ async def test_question_context_survives_clips_with_changing_speaker_labels(tmp_
     await db.close()
 
 
-async def test_late_old_clip_cannot_use_future_utterance_as_confirmation(tmp_path, monkeypatch):
+async def test_late_old_clip_is_skipped_without_transcription_or_extraction(tmp_path, monkeypatch):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, future = await queue(store, person["id"], "future-question", start=2000)
@@ -305,29 +305,14 @@ async def test_late_old_clip_cannot_use_future_utterance_as_confirmation(tmp_pat
     # The earlier upload arrives after the later question has already been saved.
     await queue(store, person["id"], "late-answer", start=0, encounter=future["encounter"])
 
-    def contextual(dialogue, current):
-        questions = [s for s in dialogue if s["text"] == "Do you live in Da Nang?"]
-        if not questions:
-            return []
-        return [
-            claim(
-                current[0],
-                "residence",
-                "Da Nang",
-                "residence",
-                evidence=[
-                    {"segment_id": questions[0]["id"], "quote": questions[0]["text"]},
-                    {"segment_id": current[0]["id"], "quote": current[0]["text"]},
-                ],
-            )
-        ]
-
     worker.verifier = Verifier()
-    provider = Provider(transcript("Yes."), contextual)
+    provider = Provider(transcript("Yes."))
     worker.providers = provider
     await process(worker)
-    assert future_question["id"] not in {s["id"] for s in provider.received}
-    assert provider.previous_summary == ""
+    assert provider.transcription_calls == 0
+    assert provider.received == []
+    assert provider.previous_summary is None
+    assert any(job["status"] == "skipped" for job in await worker.jobs.pending())
     assert await store.facts_for_person(person["id"]) == []
     await worker.close()
     await db.close()
@@ -411,6 +396,87 @@ async def test_worker_failure_can_retry_without_duplicate_facts(tmp_path, monkey
     assert result[0] == {"status": "done", "attempts": 2}
     await worker.close()
     await db.close()
+
+
+async def test_transcription_automatic_retry_saves_one_fact_and_evidence(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    await queue(store, person["id"])
+    inject_audio(monkeypatch)
+    worker = MemoryWorker(
+        store, settings, None, CaptureStore(store, JobQueue(db)), verifier=Verifier()
+    )
+
+    class Flaky(Provider):
+        async def transcribe(self, pcm):
+            self.transcription_calls += 1
+            if self.transcription_calls == 1:
+                raise TimeoutError("temporary transcription failure")
+            return self.segments
+
+    worker.providers = Flaky(transcript(), lambda _, current: [claim(current[0])])
+    try:
+        await process(worker)
+        assert await store.facts_for_person(person["id"]) == []
+        async with db.transaction() as conn:
+            await conn.execute("UPDATE jobs SET next_at=0 WHERE status='pending'")
+        await process(worker)
+        assert worker.providers.transcription_calls == 2
+        facts = await store.facts_for_person(person["id"])
+        assert len(facts) == 1 and len(facts[0]["evidence"]) == 1
+        assert await worker.jobs.pending() == []
+    finally:
+        await worker.close()
+        await db.close()
+
+
+async def test_failed_extraction_preserves_question_context_for_later_answer(tmp_path, monkeypatch):
+    settings, db, store = await make_store(tmp_path)
+    person = await store.create_person()
+    _, first = await queue(store, person["id"])
+    inject_audio(monkeypatch)
+
+    class UserVerifier:
+        def classify(self, pcm, segments, profile):
+            return [{**s, "role": "user"} for s in segments]
+
+    class Broken(Provider):
+        async def extract(self, *args):
+            raise TimeoutError("extraction unavailable")
+
+    worker = MemoryWorker(
+        store, settings, None, CaptureStore(store, JobQueue(db)), verifier=UserVerifier()
+    )
+    worker.providers = Broken(transcript("Do you live in London?"))
+    try:
+        for _ in range(3):
+            await process(worker)
+            async with db.transaction() as conn:
+                await conn.execute("UPDATE jobs SET next_at=0 WHERE status='pending'")
+        assert worker.providers.transcription_calls == 1
+        failed = (await worker.jobs.pending())[0]
+        assert failed["status"] == "failed" and failed["attempts"] == 3
+        await queue(store, person["id"], "answer", start=2000, encounter=first["encounter"])
+
+        def confirmed(dialogue, current):
+            return [claim(
+                current[0], "residence", "London", "residence",
+                evidence=[{"segment_id": s["id"], "quote": s["text"]} for s in dialogue],
+            )]
+
+        provider = Provider(transcript("Yes."), confirmed)
+        worker.providers = provider
+        worker.verifier = Verifier()
+        await process(worker)
+        assert [s["text"] for s in provider.received] == ["Do you live in London?", "Yes."]
+        facts = await store.facts_for_person(person["id"])
+        assert len(facts) == 1 and facts[0]["value"] == "London"
+        assert len(facts[0]["evidence"]) == 2
+        assert await store.latest_audio_gap(first["encounter"], 2000) is None
+        assert (await worker.jobs.pending()) == [failed]
+    finally:
+        await worker.close()
+        await db.close()
 
 
 async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path, monkeypatch):

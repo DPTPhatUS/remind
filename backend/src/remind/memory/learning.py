@@ -48,7 +48,10 @@ async def learn_conversation(
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=UTC)
         encounter_time = stamp.astimezone(ZoneInfo(settings.memory_timezone)).isoformat()
-    context = await store.recent_context(encounter_id, limit=40, before_ms=start_ms)
+    gap_end = await store.latest_audio_gap(encounter_id, start_ms)
+    context = await store.recent_context(
+        encounter_id, limit=40, before_ms=start_ms, after_ms=gap_end
+    )
     # Provider-facing roles cannot turn unassociated speech into visitor evidence.
     dialogue = bounded_dialogue(
         [
@@ -65,7 +68,9 @@ async def learn_conversation(
     facts = (await store.facts_for_person(visitor_id) if visitor_id else [])[:120]
     # A delayed old clip must not use a later summary as its context.
     previous_summary = ""
-    if encounter.get("summary_order", -1) <= start_ms:
+    if encounter.get("summary_order", -1) <= start_ms and (
+        gap_end is None or encounter.get("summary_order", -1) > gap_end
+    ):
         previous_summary = encounter.get("summary") or ""
 
     phase = time.perf_counter()

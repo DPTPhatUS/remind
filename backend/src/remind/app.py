@@ -198,12 +198,6 @@ def create_app(
     async def jobs():
         return await runtime.jobs.pending()
 
-    @app.post("/api/jobs/{ident}/retry")
-    async def retry_job(ident: str):
-        if not await runtime.jobs.retry(ident):
-            raise HTTPException(409, "Only failed, retained jobs can be retried")
-        return {"status": "pending"}
-
     @app.post("/api/session")
     async def start():
         if runtime.vision is None:
@@ -225,7 +219,12 @@ def create_app(
     async def stop(generation: str):
         if runtime.session and runtime.session.generation == generation:
             await runtime.session.stop()
-        return {"pending_jobs": len(await runtime.jobs.pending())}
+        jobs = await runtime.jobs.pending()
+        return {
+            "pending_jobs": sum(
+                job["status"] in ("pending", "running", "waiting_for_attribution") for job in jobs
+            )
+        }
 
     @app.post("/api/live/{generation}/clips")
     async def clip(generation: str, request: Request):

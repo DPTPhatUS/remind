@@ -99,6 +99,7 @@ def run_case(
                     }
                 )
                 outcome.update(
+                    processing_jobs=[j for j in database["jobs"] if j["clip_id"] in clip_ids],
                     segments=current,
                     facts=facts,
                     facts_on_other_or_unmapped_profiles=[f for f in all_facts if f not in facts],
@@ -124,10 +125,14 @@ def run_case(
                     },
                 )
             failures = [u for u in actual["uploads"] if u.get("error")]
-            if actual.get("error") or failures or actual["remaining_jobs"]:
+            skipped = [
+                u for u in actual["uploads"] if u.get("receipt", {}).get("status") == "skipped"
+            ]
+            if actual.get("error") or failures or actual["remaining_jobs"] or skipped:
                 result["status"] = "failed"
                 result["errors"].append(
-                    f"{encounter.id}: replay error, failed uploads, or unfinished/failed jobs; "
+                    f"{encounter.id}: replay error, failed uploads, "
+                    "or unfinished/failed/skipped jobs; "
                     "inspect transport.json"
                 )
             if include_audio:

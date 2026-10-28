@@ -52,7 +52,8 @@ class FakeSocket:
 
 
 def mock_server(
-    monkeypatch, *, upload_status=200, pending=False, delay_upload=False, commit_on_drain=False
+    monkeypatch, *, upload_status=200, pending=False, delay_upload=False, commit_on_drain=False,
+    terminal_status=None,
 ):
     events = []
     uploads = []
@@ -65,7 +66,9 @@ def mock_server(
         if path == "/api/people":
             return httpx.Response(200, json=[{"id": "profile"}])
         if path == "/api/people/profile":
-            has_new_fact = state["committed"] if commit_on_drain else bool(uploads)
+            has_new_fact = (
+                state["committed"] if commit_on_drain else bool(uploads) and not terminal_status
+            )
             return httpx.Response(
                 200,
                 json={"id": "profile", "facts": [fact, *([{"id": "new"}] if has_new_fact else [])]},
@@ -73,6 +76,10 @@ def mock_server(
         if path == "/api/session":
             return httpx.Response(200, json={"generation": "generation", "voice_ready": True})
         if path == "/api/jobs":
+            if terminal_status and uploads:
+                return httpx.Response(200, json=[{
+                    "id": "job", "clip_id": "clip-1", "kind": "audio", "status": terminal_status,
+                }])
             if commit_on_drain and state["stopped"]:
                 state["committed"] = True
             active = pending or (commit_on_drain and not state["stopped"] and bool(uploads))
@@ -87,7 +94,10 @@ def mock_server(
                 await asyncio.sleep(0.03)
             return httpx.Response(
                 upload_status,
-                json={"status": "queued", "job_id": f"job-{len(uploads)}"},
+                json={
+                    "status": "skipped" if terminal_status == "skipped" else "transcribing",
+                    "clip_id": f"clip-{len(uploads)}",
+                },
             )
         if path == "/api/session/generation/stop":
             state["stopped"] = True
@@ -218,6 +228,26 @@ async def test_drain_timeout_preserves_pending_jobs(tmp_path, monkeypatch):
     )
     assert result["drain_timed_out"] is True
     assert result["remaining_jobs"] == [{"id": "job", "status": "running"}]
+
+
+@pytest.mark.parametrize("status", ["failed", "skipped"])
+async def test_terminal_processing_is_observed_without_waiting_for_drain(
+    tmp_path, monkeypatch, status
+):
+    mock_server(monkeypatch, terminal_status=status)
+    media = tmp_path / "clip.wav"
+    media.write_bytes(b"wave-data")
+    result = await transport.replay_encounter(
+        "http://localhost:8000", tmp_path / "source.mp4",
+        [{"path": media, "start_ms": 0, "end_ms": 30}], 30, tmp_path,
+        include_audio=True, drain_seconds=0,
+    )
+    assert result["drain_timed_out"] is False
+    assert result["remaining_jobs"][0]["status"] == status
+    assert len(result["uploads"]) == 1
+    assert [f["id"] for f in result["people"][0]["facts"]] == ["old"]
+    if status == "skipped":
+        assert result["uploads"][0]["receipt"]["status"] == "skipped"
 
 
 async def test_late_frames_are_skipped_without_retiming_source(tmp_path, monkeypatch):

@@ -2,6 +2,15 @@ import { expect, it } from "vitest";
 import type { LiveView, PersonMemory } from "@/lib/api-types";
 import { conversationStatus, pauseStaleView } from "./state";
 
+it("shows failures and skips without counting them as processing", () => {
+  expect(conversationStatus([
+    { status: "failed" }, { status: "failed" }, { status: "skipped" },
+    { status: "pending" }, { status: "running" },
+  ])).toBe("2 conversation clip(s) could not be processed. Learning continues with later recordings. 1 late recording(s) skipped. 2 conversation clip(s) processing.");
+  expect(conversationStatus([{ status: "skipped" }])).toBe("1 late recording(s) skipped.");
+  expect(conversationStatus([{ status: "done" }, { status: "cancelled" }])).toBe("");
+});
+
 const memory: PersonMemory = {
   id: "visitor", name: "James", relationship: null, age: null, notes: null,
   version: 1, created_at: "2026-10-28T00:00:00Z", profile_summary: null,
@@ -23,18 +32,13 @@ function view(): LiveView {
   };
 }
 
-it("prioritizes failed processing, then waiting for identity, then ordinary processing", () => {
-  expect(conversationStatus([{ status: "failed" }, { status: "waiting_for_attribution" }, { status: "failed" }])).toEqual({
-    hasFailedJobs: true,
-    jobsStatus: "2 conversation clip(s) could not be processed. Check your connection or service setup, then retry.",
-  });
-  expect(conversationStatus([{ status: "waiting_for_attribution" }, { status: "learning" }])).toEqual({
-    hasFailedJobs: false, jobsStatus: "Conversation transcribed; waiting to identify the visitor.",
-  });
-  expect(conversationStatus([{ status: "learning" }])).toEqual({
-    hasFailedJobs: false, jobsStatus: "1 conversation clip(s) processing.",
-  });
-  expect(conversationStatus([])).toEqual({ hasFailedJobs: false, jobsStatus: "" });
+it("shows attribution waits alongside failures and ordinary processing otherwise", () => {
+  expect(conversationStatus([{ status: "failed" }, { status: "waiting_for_attribution" }]))
+    .toBe("1 conversation clip(s) could not be processed. Learning continues with later recordings. Conversation transcribed; waiting to identify the visitor.");
+  expect(conversationStatus([{ status: "waiting_for_attribution" }, { status: "pending" }]))
+    .toBe("Conversation transcribed; waiting to identify the visitor.");
+  expect(conversationStatus([{ status: "running" }])).toBe("1 conversation clip(s) processing.");
+  expect(conversationStatus([])).toBe("");
 });
 
 it("pauses stale observations without mutating the received view or losing an unexpired reminder", () => {

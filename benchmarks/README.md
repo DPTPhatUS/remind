@@ -76,8 +76,14 @@ clean audio through the normal clip API.
 Visual replay runs once at normal speed. Frames over 100 ms late are counted and
 skipped; the production queue can also replace frames. Audio uploads run
 independently and use the same source clock. There are no extra benchmark
-retries. Video preserves production job retries, then waits up to ten minutes
-for outstanding work. Upload failures and unfinished/failed jobs remain visible.
+retries. Video preserves the three production automatic attempts, then waits up
+to ten minutes for unfinished processing and attribution. Failed jobs are final;
+later learning continues. New media arriving after a newer learning window has
+started is skipped by the backend without model work. Upload failures, failed
+processing, deliberately skipped recordings and unfinished jobs remain visible.
+Skipped recordings do not count as queued audio jobs or successful processing;
+duplicate receipts count only once. Video outcomes retain scoped
+`processing_jobs`, including each job's state and error, alongside raw transport.
 Face/video encounters share a case store, allowing returning-face recognition.
 The benchmark does not automate restart, reminder recall, or forgetting.
 

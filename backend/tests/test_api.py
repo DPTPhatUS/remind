@@ -9,12 +9,29 @@ def test_readiness_people_and_single_capture_owner(tmp_path):
         health = client.get("/api/health").json()
         assert health["vision"]["available"] is False
         assert client.get("/api/people").json() == []
+        assert client.post("/api/jobs/old-job/retry").status_code == 404
         assert (
             client.post("/api/session", headers={"Origin": "https://evil.example"}).status_code
             == 403
         )
         # Missing models must not pretend a live session is functioning.
         assert client.post("/api/session").status_code == 503
+
+
+def test_job_status_keeps_terminal_outcomes_but_stop_counts_only_unfinished_work(
+    tmp_path, monkeypatch
+):
+    jobs = [{"id": str(i), "status": status} for i, status in enumerate(
+        ["pending", "running", "waiting_for_attribution", "failed", "skipped"]
+    )]
+
+    async def statuses(self):
+        return jobs
+
+    monkeypatch.setattr("remind.memory.jobs.JobQueue.pending", statuses)
+    with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
+        assert client.get("/api/jobs").json() == jobs
+        assert client.post("/api/session/stopped/stop").json() == {"pending_jobs": 3}
 
 
 def test_retained_final_clip_can_retry_after_stop(tmp_path, monkeypatch):

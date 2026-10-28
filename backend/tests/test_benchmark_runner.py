@@ -146,6 +146,31 @@ def test_readable_video_report_explains_unmeasured_processing(tmp_path):
     assert "Execution status describes completion, not model accuracy" in summary
 
 
+def test_video_report_distinguishes_skipped_failed_and_unfinished_work(tmp_path):
+    from remind.benchmark.report import write_report
+
+    upload = {"receipt": {"clip_id": "late", "status": "skipped"}}
+    outcome = {
+        "id": "encounter", "scores": {},
+        "transport": {"uploads": [upload, upload]},
+        "processing_jobs": [
+            {"status": "skipped"}, {"status": "failed"}, {"status": "pending"},
+        ],
+    }
+    write_report({
+        "kind": "video", "title": "Failures", "status": "failed",
+        "annotation_notes": "Fixture", "limitations": [],
+        "cases": [{"id": "case", "status": "failed", "errors": [], "outcomes": [outcome]}],
+    }, tmp_path)
+    summary = (tmp_path / "report.md").read_text()
+    assert "Queued audio jobs | 0" in summary
+    assert "Skipped recordings | 1" in summary
+    assert "Failed processing jobs | 1" in summary
+    assert "Unfinished processing jobs | 1" in summary
+    assert "extraction correctness were not measured" in summary
+    assert json.loads((tmp_path / "report.json").read_text())["cases"][0]["outcomes"][0] == outcome
+
+
 @pytest.mark.parametrize("kind", ["audio", "conversation", "face", "video"])
 def test_report_artifacts_preserve_each_paths_measurements(tmp_path, kind):
     from remind.benchmark.report import write_report
@@ -218,7 +243,8 @@ def test_report_artifacts_preserve_each_paths_measurements(tmp_path, kind):
         outcome["transport"] = {
             "frames_sent": 10,
             "frames_skipped_late": 1,
-            "uploads": [{"receipt": {"clip_id": "clip"}}] if kind == "video" else [],
+            "uploads": [{"receipt": {"clip_id": "clip", "status": "transcribing"}}]
+            if kind == "video" else [],
         }
         rows += ["| Frames sent | 10 |", "| Frames skipped late | 1 |"]
     if kind == "video":

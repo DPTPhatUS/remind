@@ -2,11 +2,10 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { conversationStatus } from "./state";
 
-type Job = { id: string; status: string };
+type Job = { status: string };
 
-export function useConversationJobs(onError: (message: string) => void) {
+export function useConversationJobs() {
   const [jobsStatus, setJobsStatus] = useState("");
-  const [hasFailedJobs, setHasFailedJobs] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -15,9 +14,7 @@ export function useConversationJobs(onError: (message: string) => void) {
       try {
         const jobs = await api<Job[]>("/jobs");
         if (!active) return;
-        const status = conversationStatus(jobs);
-        setHasFailedJobs(status.hasFailedJobs);
-        setJobsStatus(status.jobsStatus);
+        setJobsStatus(conversationStatus(jobs));
       } catch {
         if (active) {
           setJobsStatus(
@@ -37,16 +34,5 @@ export function useConversationJobs(onError: (message: string) => void) {
     };
   }, []);
 
-  const retryJobs = async () => {
-    try {
-      const jobs = await api<Job[]>("/jobs");
-      for (const job of jobs.filter((job) => job.status === "failed"))
-        await api(`/jobs/${job.id}/retry`, { method: "POST" });
-      setJobsStatus("Retrying failed conversations.");
-    } catch (error) {
-      onError(String(error));
-    }
-  };
-
-  return { jobsStatus, hasFailedJobs, retryJobs };
+  return jobsStatus;
 }
