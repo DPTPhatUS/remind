@@ -326,7 +326,7 @@ async def test_trimmed_live_history_preserves_original_capture_snapshot(store):
     assert source["association"]["reason"] == "direct_confirmation"
 
 
-async def test_concurrent_claims_have_one_owner_and_preserve_claim_snapshot(captures, store):
+async def test_concurrent_claims_have_one_owner_and_increment_attempts_once(captures, store):
     receipt = await captures.receive_clip("s", "clip", 0, 1000, None, [], 0)
     claims = await asyncio.gather(
         captures.jobs.claim("first", 1000), captures.jobs.claim("second", 1000)
@@ -334,8 +334,6 @@ async def test_concurrent_claims_have_one_owner_and_preserve_claim_snapshot(capt
     winner = next(job for job in claims if job is not None)
     assert claims.count(None) == 1
     assert winner["clip_id"] == receipt["clip_id"]
-    # The worker historically receives the pre-claim SQL row plus its new token.
-    assert winner["status"] == "pending" and winner["attempts"] == 0
     async with store.db.transaction() as db:
         persisted = (await rows(db, "SELECT status,attempts,lease_token FROM jobs"))[0]
     assert persisted == {"status": "running", "attempts": 1, "lease_token": winner["lease_token"]}

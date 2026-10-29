@@ -4,7 +4,7 @@ import json
 import time
 
 from remind.database import Database, Record, rows
-from remind.memory.contracts import ClaimedJob, ClipFields, JobFields
+from remind.memory.contracts import ClaimedJob, JobFields
 from remind.memory.store import uid
 
 
@@ -66,46 +66,18 @@ class JobQueue:
                 (token, stamp + 180000, job["id"]),
             )
             clip = (await rows(db, "SELECT * FROM clips WHERE id=?", (job["clip_id"],)))[0]
-        # Decode the stored SQL shape once. Claiming preserves the returned row's
-        # pre-update status/attempts, matching the existing worker interface.
-        captured: ClipFields = {
-            "id": clip["id"],
-            "generation": clip["generation"],
-            "window_key": clip["window_key"],
-            "start_ms": clip["start_ms"],
-            "end_ms": clip["end_ms"],
-            "path": clip["path"],
-            "received_ms": clip["received_ms"],
-            "expires_ms": clip["expires_ms"],
-            "voice_version": clip["voice_version"],
-            "voice_ready": clip["voice_ready"],
-            "input_kind": clip["input_kind"],
-            "timeline": clip["timeline"],
-            "attribution_final": clip["attribution_final"],
-            "audio_done": clip["audio_done"],
-            "cancelled": clip["cancelled"],
-        }
         common: JobFields = {
             "id": job["id"],
             "clip_id": job["clip_id"],
-            "status": job["status"],
-            "attempts": job["attempts"],
             "lease_token": token,
-            "lease_until": job["lease_until"],
-            "next_at": job["next_at"],
-            "error": job["error"],
-            "created_at": job["created_at"],
         }
         if job["kind"] == "audio":
             return {
                 **common,
                 "kind": "audio",
-                "encounter_id": job["encounter_id"],
-                "payload": json.loads(job["payload"]),
                 "clip": {
-                    **captured,
-                    "audio_completed_ms": clip["audio_completed_ms"],
-                    "attribution_finalized_ms": clip["attribution_finalized_ms"],
+                    "path": clip["path"],
+                    "voice_version": clip["voice_version"],
                 },
             }
         return {
@@ -114,7 +86,9 @@ class JobQueue:
             "encounter_id": job["encounter_id"],
             "payload": json.loads(job["payload"]),
             "clip": {
-                **captured,
+                "voice_ready": clip["voice_ready"],
+                "input_kind": clip["input_kind"],
+                "received_ms": clip["received_ms"],
                 "audio_completed_ms": clip["audio_completed_ms"],
                 "attribution_finalized_ms": clip["attribution_finalized_ms"],
             },

@@ -3,7 +3,6 @@
 from typing import Literal, NotRequired, TypedDict
 
 VoiceRole = Literal["user", "visitor", "uncertain"]
-JobStatus = Literal["pending", "running", "done", "failed", "cancelled", "skipped"]
 
 
 class PendingAssociation(TypedDict):
@@ -81,30 +80,15 @@ class LearningPayload(TypedDict):
     end_ms: float
 
 
-class ClipFields(TypedDict):
-    id: str
-    generation: str
-    window_key: str
-    start_ms: float
-    end_ms: float
+class AudioClipInput(TypedDict):
     path: str | None
-    received_ms: int
-    expires_ms: int
     voice_version: int | None
+
+
+class LearningClipInput(TypedDict):
     voice_ready: int
     input_kind: Literal["media", "conversation"]
-    timeline: str
-    attribution_final: int
-    audio_done: int
-    cancelled: int
-
-
-class ClipRow(ClipFields):
-    audio_completed_ms: int | None
-    attribution_finalized_ms: int | None
-
-
-class LearningClipRow(ClipFields):
+    received_ms: int
     audio_completed_ms: int
     attribution_finalized_ms: int
 
@@ -112,27 +96,19 @@ class LearningClipRow(ClipFields):
 class JobFields(TypedDict):
     id: str
     clip_id: str
-    status: JobStatus
-    attempts: int
     lease_token: str
-    lease_until: int
-    next_at: int
-    error: str | None
-    created_at: str
 
 
 class AudioJob(JobFields):
     kind: Literal["audio"]
-    encounter_id: None
-    payload: dict[str, object]
-    clip: ClipRow
+    clip: AudioClipInput
 
 
 class LearningJob(JobFields):
     kind: Literal["learning"]
     encounter_id: str
     payload: LearningPayload
-    clip: LearningClipRow
+    clip: LearningClipInput
 
 
 ClaimedJob = AudioJob | LearningJob

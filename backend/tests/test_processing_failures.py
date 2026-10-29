@@ -428,10 +428,19 @@ async def test_restart_preserves_failure_attempts_and_releases_later_work(scenar
 async def test_restart_keeps_skipped_upload_terminal_and_attempts_monotonic(scenario):
     await ready_audio(scenario, 1000)
     running = await scenario.jobs.claim("old-process", scenario.clock.now)
+
+    async def stored_attempts():
+        return next(
+            job["attempts"] for job in await scenario.jobs.pending() if job["id"] == running["id"]
+        )
+
+    assert await stored_attempts() == 1
     skipped = await scenario.receive(0)
     await scenario.captures.recover()
+    assert await stored_attempts() == 1
     resumed = await scenario.jobs.claim("new-process", scenario.clock.now)
-    assert resumed["id"] == running["id"] and resumed["attempts"] == 1
+    assert resumed["id"] == running["id"]
+    assert await stored_attempts() == 2
     assert resumed["lease_token"] != running["lease_token"]
     assert not await saved_interest(scenario, running)
     assert await saved_interest(scenario, resumed)
