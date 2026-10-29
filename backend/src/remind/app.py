@@ -16,6 +16,7 @@ from remind.config import Settings
 from remind.live.session import LiveSession
 from remind.live.stream import serve_vision
 from remind.runtime import Runtime
+from remind.spool import ClipTooLargeError, SpoolFullError
 
 
 class Correction(BaseModel):
@@ -237,30 +238,21 @@ def create_app(
         if not 0 < metadata.end_ms - metadata.start_ms <= 10000:
             raise HTTPException(422, "Invalid clip duration")
         snapshot = await session.snapshot(metadata.start_ms, metadata.end_ms)
-        spool = settings.data_dir / "spool"
-        spool.mkdir(parents=True, exist_ok=True)
-        used = sum(p.stat().st_size for p in spool.glob("*") if p.is_file())
-        if used >= settings.spool_limit_bytes:
-            raise HTTPException(507, "Memory storage is full; recording paused")
-        path = spool / (str(uuid4()) + ".webm")
-        total = 0
         try:
-            with path.open("wb") as f:
-                async for chunk in request.stream():
-                    total += len(chunk)
-                    if used + total > settings.spool_limit_bytes:
-                        raise HTTPException(507, "Memory storage is full; recording paused")
-                    if total > 16 * 1024 * 1024:
-                        raise HTTPException(413, "Clip exceeds 16 MiB")
-                    f.write(chunk)
-            if total == 0:
-                raise HTTPException(422, "Clip is empty")
+            path = await runtime.spool.save(request.stream())
+        except SpoolFullError as exc:
+            raise HTTPException(507, "Memory storage is full; recording paused") from exc
+        except ClipTooLargeError as exc:
+            raise HTTPException(413, "Clip exceeds 16 MiB") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
             receipt = await runtime.captures.receive_clip(
                 generation,
                 metadata.window_id,
                 metadata.start_ms,
                 metadata.end_ms,
-                str(path.resolve()),
+                str(path),
                 snapshot["timeline"],
                 snapshot["voice_version"],
             )

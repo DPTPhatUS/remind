@@ -19,6 +19,9 @@ seconds of temporary absence. Competing/multiple faces pause learning.
 Runtime owns the cloud provider, shared voice verifier and executors. Voice setup
 and the memory worker use the same single-thread audio executor. The worker uses
 supplied dependencies; Runtime stops background tasks before closing resources.
+Each shutdown cleanup is attempted even when an earlier one raises. Runtime also
+owns recording quota coordination: buffered uploads and existing files share one
+limit, with capacity released only after their bytes are removed from storage.
 
 Leases, transactional writes, and idempotent windows protect
 retries and restarts. Source transcripts and structured evidence support correction

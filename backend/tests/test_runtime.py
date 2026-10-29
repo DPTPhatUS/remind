@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -85,8 +86,9 @@ async def test_runtime_supplies_and_closes_shared_resources(runtime_factory, mon
         runtime.memory_pool.submit(lambda: None)
 
 
+@pytest.mark.parametrize("stop_fails", [False, True])
 async def test_shutdown_stops_session_and_awaits_tasks_before_closing_resources(
-    runtime_factory, monkeypatch
+    runtime_factory, monkeypatch, stop_fails
 ):
     create, events, _ = runtime_factory
     runtime = create()
@@ -105,19 +107,24 @@ async def test_shutdown_stops_session_and_awaits_tasks_before_closing_resources(
 
     monkeypatch.setattr(runtime, "maintain_memory", lambda: background(0))
     monkeypatch.setattr(runtime, "watch_session", lambda: background(1))
-    runtime.session = SimpleNamespace(
-        stop=AsyncMock(side_effect=lambda: events.append("session stopped"))
-    )
+
+    async def stop():
+        events.append("session stopped")
+        if stop_fails:
+            raise RuntimeError("session stop")
+
+    runtime.session = SimpleNamespace(stop=stop)
     lifecycle = runtime.lifespan(None)
     await lifecycle.__aenter__()
-    await asyncio.gather(*(event.wait() for event in started))
+    await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 1)
     shutdown = asyncio.create_task(lifecycle.__aexit__(None, None, None))
     try:
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in cancelling)), 1)
         assert events == ["session stopped"]
     finally:
         finish_cancellation.set()
-        await shutdown
+        with pytest.raises(RuntimeError, match="session stop") if stop_fails else nullcontext():
+            await shutdown
 
     assert set(events[1:3]) == {"task 0 stopped", "task 1 stopped"}
     assert events[3:] == [
@@ -140,7 +147,7 @@ async def test_startup_failure_closes_resources(runtime_factory, monkeypatch):
     assert runtime.database.connection is None
 
 
-async def test_provider_close_failure_still_closes_memory_pool(runtime_factory):
+async def test_provider_close_failure_still_closes_all_resources(runtime_factory):
     create, events, _ = runtime_factory
     runtime = create()
     runtime.providers.close.side_effect = RuntimeError("provider close")
@@ -149,6 +156,47 @@ async def test_provider_close_failure_still_closes_memory_pool(runtime_factory):
         async with runtime.lifespan(None):
             pass
 
-    assert "memory pool closed" in events
-    with pytest.raises(RuntimeError, match="cannot schedule new futures after shutdown"):
-        runtime.memory_pool.submit(lambda: None)
+    assert events == ["memory pool closed", "vision pool closed", "database closed"]
+    assert runtime.database.connection is None
+    for pool in (runtime.memory_pool, runtime.vision_pool):
+        with pytest.raises(RuntimeError, match="cannot schedule new futures after shutdown"):
+            pool.submit(lambda: None)
+
+
+@pytest.mark.parametrize("pool_name", ["memory_pool", "vision_pool"])
+async def test_executor_shutdown_failure_still_closes_remaining_resources(
+    runtime_factory, monkeypatch, pool_name
+):
+    create, events, _ = runtime_factory
+    runtime = create()
+    pool = getattr(runtime, pool_name)
+    shutdown = pool.shutdown
+
+    def fail(*, wait):
+        shutdown(wait=wait)
+        raise RuntimeError("executor shutdown")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pool, "shutdown", fail)
+        with pytest.raises(RuntimeError, match="executor shutdown"):
+            async with runtime.lifespan(None):
+                pass
+
+    assert events == [
+        "provider closed", "memory pool closed", "vision pool closed", "database closed"
+    ]
+    assert runtime.database.connection is None
+
+
+async def test_shutdown_failure_preserves_original_error_context(runtime_factory):
+    create, events, _ = runtime_factory
+    runtime = create()
+    runtime.providers.close.side_effect = RuntimeError("provider close")
+    original = ValueError("application failure")
+
+    with pytest.raises(RuntimeError, match="provider close") as failure:
+        async with runtime.lifespan(None):
+            raise original
+
+    assert failure.value.__context__ is original
+    assert events == ["memory pool closed", "vision pool closed", "database closed"]

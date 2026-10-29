@@ -84,9 +84,11 @@ transcripts also expire after 24 hours; attributed textual evidence stays with
 memories. Initial identity attribution can wait 30 seconds without blocking
 transcription. Learning retries reuse saved audio-stage results. Failed
 uploads pause capture and retain one clip in the current tab for retry or download.
-Failed processing can be retried from Live. The existing bounded recording
-transport is retained, including brief upload gaps; interrupted sentences may be
-incomplete. Stop recording when an interaction should not be recorded.
+Processing gets up to three automatic attempts. Exhausted failures remain visible
+while later recordings continue. The storage cap includes in-progress uploads;
+files awaiting cleanup remain counted until deletion succeeds. The existing
+bounded recording transport is retained, including brief upload gaps; interrupted
+sentences may be incomplete. Stop recording when an interaction should not be recorded.
 
 This version assumes one visitor and a quiet conversation. A television or another
 off-screen voice can be mistaken for the visitor, including during the five-second
@@ -108,6 +110,7 @@ providers may require an adapter rather than only changing the model ID.
 | --- | --- |
 | `backend/src/remind/app.py` | HTTP routes, request validation, and local access guards |
 | `backend/src/remind/runtime.py` | Startup, shutdown, models, and background tasks |
+| `backend/src/remind/spool.py` | Shared storage quota and streamed recording files |
 | `backend/src/remind/live/` | Camera transport, one face candidate, and encounter association |
 | `backend/src/remind/vision/` | Face detection, recognition, and model installation |
 | `backend/src/remind/audio/` | Audio decoding, user-voice verification, and cloud providers |

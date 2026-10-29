@@ -51,6 +51,13 @@ A successful upload returns:
 unrecognized visitor is never an upload rejection. Ordinary HTTP validation,
 storage and session-access errors still apply.
 
+The single backend process enforces one shared recording-storage cap, including
+buffered uploads and existing files. Capacity is checked before each chunk is
+written, without locking network reads. A full spool returns 507; a clip over
+16 MiB returns 413; an empty clip returns 422. Cancelled or failed streams release
+their reservations and remove partial media where possible. Files that cannot be
+deleted, including duplicates/skips awaiting cleanup, remain counted until removal.
+
 A new media window arriving after a later window's learning job has been attempted
 in the same generation returns `skipped`. Its audio job has zero attempts and the
 error `Recording arrived after newer learning started`. Intake records the receipt

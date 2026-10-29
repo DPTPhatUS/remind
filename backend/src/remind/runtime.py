@@ -3,7 +3,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -16,6 +16,7 @@ from remind.memory.capture import CaptureStore
 from remind.memory.jobs import JobQueue
 from remind.memory.store import MemoryStore
 from remind.memory.worker import MemoryWorker
+from remind.spool import RecordingSpool
 from remind.vision.engine import OpenCVVision
 from remind.vision.models import ModelRegistry
 
@@ -36,6 +37,7 @@ class Runtime:
         self.store = MemoryStore(self.database, template_threshold=settings.match_threshold)
         self.jobs = JobQueue(self.database)
         self.captures = CaptureStore(self.store, self.jobs, settings.attribution_wait_seconds)
+        self.spool = RecordingSpool(settings.data_dir / "spool", settings.spool_limit_bytes)
         self.registry = ModelRegistry(settings.data_dir / "models")
         self.verifier = verifier or UserVoiceVerifier(settings, self.registry)
         self.providers = Providers(settings) if settings.openai_api_key else None
@@ -56,37 +58,39 @@ class Runtime:
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncIterator[None]:
         tasks: list[asyncio.Task] = []
-        try:
-            await self.database.create_schema()
-            await self.captures.recover()
+        async with AsyncExitStack() as cleanup:
+            # Reverse shutdown order; failures cannot skip later cleanup.
+            cleanup.push_async_callback(self.database.close)
+            cleanup.callback(self.vision_pool.shutdown, wait=True)
+            cleanup.callback(self.memory_pool.shutdown, wait=True)
+            if self.providers:
+                cleanup.push_async_callback(self.providers.close)
             try:
-                self.vision = await asyncio.get_running_loop().run_in_executor(
-                    self.vision_pool, OpenCVVision, self.registry, self.settings.vision_threads
-                )
-                self.vision_error = None
-            except (FileNotFoundError, ValueError, RuntimeError) as exc:
-                self.vision_error = str(exc)
+                await self.database.create_schema()
+                await self.captures.recover()
+                try:
+                    self.vision = await asyncio.get_running_loop().run_in_executor(
+                        self.vision_pool, OpenCVVision, self.registry, self.settings.vision_threads
+                    )
+                    self.vision_error = None
+                except (FileNotFoundError, ValueError, RuntimeError) as exc:
+                    self.vision_error = str(exc)
 
-            tasks = [
-                asyncio.create_task(self.maintain_memory(), name="memory-worker"),
-                asyncio.create_task(self.watch_session(), name="session-watchdog"),
-            ]
-            for task in tasks:
-                task.add_done_callback(report_task_failure)
-            yield
-        finally:
-            if self.session:
-                await self.session.stop()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            try:
-                if self.providers:
-                    await self.providers.close()
+                tasks = [
+                    asyncio.create_task(self.maintain_memory(), name="memory-worker"),
+                    asyncio.create_task(self.watch_session(), name="session-watchdog"),
+                ]
+                for task in tasks:
+                    task.add_done_callback(report_task_failure)
+                yield
             finally:
-                self.memory_pool.shutdown(wait=True)
-            self.vision_pool.shutdown(wait=True)
-            await self.database.close()
+                try:
+                    if self.session:
+                        await self.session.stop()
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
     async def watch_session(self) -> None:
         while True:
