@@ -294,7 +294,7 @@ async def test_late_upload_is_skipped_after_learning_starts(scenario, state):
 
 
 async def test_skipped_upload_never_calls_processing_and_duplicate_stays_skipped(
-    scenario, tmp_path
+    scenario, tmp_path, audio_pool
 ):
     await ready_audio(scenario, 1000)
     learning = await scenario.jobs.claim("test", scenario.clock.now)
@@ -305,13 +305,6 @@ async def test_skipped_upload_never_calls_processing_and_duplicate_stays_skipped
     first = await scenario.captures.receive_clip("session", "0", 0, 1000, str(recording), [], 1)
     duplicate = await scenario.receive(0)
     assert duplicate == first
-    worker = MemoryWorker(
-        scenario.store,
-        Settings(data_dir=tmp_path, openai_api_key=""),
-        None,
-        scenario.captures,
-        verifier=object(),
-    )
 
     class UnusedProvider:
         async def transcribe(self, *args):
@@ -320,16 +313,17 @@ async def test_skipped_upload_never_calls_processing_and_duplicate_stays_skipped
         async def extract(self, *args):
             pytest.fail("Skipped uploads must not reach providers")
 
-        async def close(self):
-            pass
-
-    worker.providers = UnusedProvider()
-    try:
-        assert not await worker.run_once()
-        await worker.cleanup()
-        assert not recording.exists()
-    finally:
-        await worker.close()
+    worker = MemoryWorker(
+        scenario.store,
+        Settings(data_dir=tmp_path, openai_api_key=""),
+        scenario.captures,
+        providers=UnusedProvider(),
+        verifier=object(),
+        pool=audio_pool,
+    )
+    assert not await worker.run_once()
+    await worker.cleanup()
+    assert not recording.exists()
     async with scenario.store.db.transaction() as db:
         assert len(await rows(db, "SELECT id FROM clips")) == 2
         assert len(await rows(db, "SELECT id FROM jobs WHERE kind='audio'")) == 2

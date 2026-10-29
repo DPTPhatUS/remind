@@ -16,6 +16,10 @@ transcripts once; learning jobs associate complete turns with encounters. A sing
 candidate supports automatic recognition/enrollment, and an encounter allows five
 seconds of temporary absence. Competing/multiple faces pause learning.
 
+Runtime owns the cloud provider, shared voice verifier and executors. Voice setup
+and the memory worker use the same single-thread audio executor. The worker uses
+supplied dependencies; Runtime stops background tasks before closing resources.
+
 Leases, transactional writes, and idempotent windows protect
 retries and restarts. Source transcripts and structured evidence support correction
 and forgetting. No video is decoded for voice recognition.

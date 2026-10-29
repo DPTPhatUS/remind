@@ -16,14 +16,18 @@ from remind.memory.worker import MemoryWorker
 
 
 class Verifier:
+    def __init__(self, role="visitor"):
+        self.role = role
+
     def classify(self, pcm, segments, profile):
-        return [{**segment, "role": "visitor"} for segment in segments]
+        return [{**segment, "role": self.role} for segment in segments]
 
 
 class Provider:
     def __init__(self, segments, claims=None, on_extract=None):
         self.segments = segments
         self.transcription_calls = 0
+        self.extraction_calls = 0
         self.claims = claims
         self.on_extract = on_extract
         self.received = []
@@ -42,6 +46,7 @@ class Provider:
         encounter_time,
         current_ids,
     ):
+        self.extraction_calls += 1
         self.received = dialogue
         self.encounter_time = encounter_time
         self.previous_summary = previous_summary
@@ -63,9 +68,6 @@ class Provider:
                 for i in range(len(facts))
             ]
         }
-
-    async def close(self):
-        pass
 
 
 def claim(segment, predicate="name", value="Anna", category="identity", evidence=None):
@@ -150,16 +152,20 @@ def inject_audio(monkeypatch, continuous=True):
     monkeypatch.setattr("remind.audio.processing.has_speech", lambda pcm: True)
 
 
-async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkeypatch):
+async def test_introduction_worker_restart_and_automatic_recall(tmp_path, audio_pool, monkeypatch):
     settings, db, store = await make_store(tmp_path)
     vector = np.eye(128, dtype=np.float32)[0]
     person = await store.enroll_person(None, [vector])
     job, payload = await queue(store, person["id"])
     inject_audio(monkeypatch)
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=Provider(transcript(), lambda _, current: [claim(current[0])]),
+        verifier=Verifier(),
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
     assert await process(worker)
     assert (await store.get_person(person["id"]))["name"] == "Anna"
     assert (await store.recent_context(payload["encounter"]))[0]["id"].startswith(job + ":")
@@ -178,7 +184,6 @@ async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkey
         )
     )
     assert not await process(worker)
-    await worker.close()
     await store.close_encounter(payload["encounter"], 2000)
     await db.close()
 
@@ -209,6 +214,7 @@ async def test_introduction_worker_restart_and_automatic_recall(tmp_path, monkey
 @pytest.mark.parametrize("reason", ["no_voice", "multiple_faces", "discontinuous_audio"])
 async def test_unreliable_roles_save_neutral_memory_without_profile_facts(
     tmp_path,
+    audio_pool,
     monkeypatch,
     reason,
 ):
@@ -217,9 +223,13 @@ async def test_unreliable_roles_save_neutral_memory_without_profile_facts(
     _, payload = await queue(store, person["id"], eligible=reason != "multiple_faces")
     inject_audio(monkeypatch, continuous=reason != "discontinuous_audio")
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=Provider(transcript(), lambda _, current: [claim(current[0])]),
+        verifier=Verifier(),
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
     await process(worker)
     assert await store.facts_for_person(person["id"]) == []
     context = await store.recent_context(payload["encounter"])
@@ -234,28 +244,29 @@ async def test_unreliable_roles_save_neutral_memory_without_profile_facts(
     else:
         assert context[0]["role"] == "uncertain"
         assert (await store.get_encounter(payload["encounter"]))["summary"]
-    await worker.close()
     await db.close()
 
 
-async def test_question_context_survives_clips_with_changing_speaker_labels(tmp_path, monkeypatch):
+async def test_question_context_survives_clips_with_changing_speaker_labels(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, payload = await queue(store, person["id"], "question")
     inject_audio(monkeypatch)
+    verifier = Verifier("user")
+    provider = Provider(transcript("Where do you work?", "A"))
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=provider,
+        verifier=verifier,
+        pool=audio_pool,
     )
-
-    class UserVerifier:
-        def classify(self, pcm, segments, profile):
-            return [{**s, "role": "user"} for s in segments]
-
-    worker.verifier = UserVerifier()
-    worker.providers = Provider(transcript("Where do you work?", "A"))
     await process(worker)
     await queue(store, person["id"], "answer", start=2000, encounter=payload["encounter"])
-    worker.verifier = Verifier()
+    verifier.role = "visitor"
 
     def contextual(dialogue, current):
         question, answer = dialogue[0], current[0]
@@ -275,29 +286,33 @@ async def test_question_context_survives_clips_with_changing_speaker_labels(tmp_
             )
         ]
 
-    worker.providers = Provider(transcript("At the primary school.", "A"), contextual)
+    provider.segments = transcript("At the primary school.", "A")
+    provider.claims = contextual
     await process(worker)
     facts = await store.facts_for_person(person["id"])
     assert len(facts) == 1 and facts[0]["value"] == "primary school"
     assert len(facts[0]["evidence"]) == 2
-    await worker.close()
     await db.close()
 
 
-async def test_late_old_clip_is_skipped_without_transcription_or_extraction(tmp_path, monkeypatch):
+async def test_late_old_clip_is_skipped_without_transcription_or_extraction(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, future = await queue(store, person["id"], "future-question", start=2000)
     inject_audio(monkeypatch)
 
-    class UserVerifier:
-        def classify(self, pcm, segments, profile):
-            return [{**s, "role": "user"} for s in segments]
-
+    verifier = Verifier("user")
+    provider = Provider(transcript("Do you live in Da Nang?"))
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=UserVerifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=provider,
+        verifier=verifier,
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript("Do you live in Da Nang?"))
     await process(worker)
     future_question = (await store.recent_context(future["encounter"]))[0]
     assert future_question["start_ms"] == 2200
@@ -305,21 +320,24 @@ async def test_late_old_clip_is_skipped_without_transcription_or_extraction(tmp_
     # The earlier upload arrives after the later question has already been saved.
     await queue(store, person["id"], "late-answer", start=0, encounter=future["encounter"])
 
-    worker.verifier = Verifier()
-    provider = Provider(transcript("Yes."))
-    worker.providers = provider
+    verifier.role = "visitor"
+    provider.segments = transcript("Yes.")
+    previous_dialogue = provider.received
+    previous_summary = provider.previous_summary
     await process(worker)
-    assert provider.transcription_calls == 0
-    assert provider.received == []
-    assert provider.previous_summary is None
+    assert provider.transcription_calls == 1
+    assert provider.extraction_calls == 1
+    assert provider.received is previous_dialogue
+    assert provider.previous_summary == previous_summary
     assert any(job["status"] == "skipped" for job in await worker.jobs.pending())
     assert await store.facts_for_person(person["id"]) == []
-    await worker.close()
     await db.close()
 
 
 @pytest.mark.parametrize("action", ["forget", "correct", "replace_voice"])
-async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monkeypatch, action):
+async def test_pending_extraction_cannot_undo_concurrent_mutation(
+    tmp_path, audio_pool, monkeypatch, action
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     await queue(store, person["id"])
@@ -334,9 +352,13 @@ async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monk
             await store.set_voice_profile([[0.0, 1.0, 0.0]], "replacement")
 
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=Provider(transcript(), lambda _, current: [claim(current[0])], mutation),
+        verifier=Verifier(),
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])], mutation)
     await process(worker)
     current = await store.get_person(person["id"])
     if action == "forget":
@@ -346,7 +368,6 @@ async def test_pending_extraction_cannot_undo_concurrent_mutation(tmp_path, monk
         assert current["name"] == "Grace"
     else:
         assert current["name"] is None
-    await worker.close()
     await db.close()
 
 
@@ -369,43 +390,53 @@ def test_capture_time_association_requires_whole_turn_and_fresh_history():
     assert associate_turn(turn, changed, final=True)["reason"] == "encounter_boundary"
 
 
-async def test_worker_failure_can_retry_without_duplicate_facts(tmp_path, monkeypatch):
+async def test_worker_failure_can_retry_without_duplicate_facts(tmp_path, audio_pool, monkeypatch):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     job, _ = await queue(store, person["id"])
     inject_audio(monkeypatch)
-    worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
-    )
 
-    class Broken(Provider):
+    class Flaky(Provider):
+        verification_calls = 0
+
         async def verify(self, *args):
-            raise TimeoutError("temporary provider issue")
+            self.verification_calls += 1
+            if self.verification_calls == 1:
+                raise TimeoutError("temporary provider issue")
+            return await super().verify(*args)
 
-    worker.providers = Broken(transcript(), lambda _, current: [claim(current[0])])
+    provider = Flaky(transcript(), lambda _, current: [claim(current[0])])
+    worker = MemoryWorker(
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=provider,
+        verifier=Verifier(),
+        pool=audio_pool,
+    )
     await process(worker)
+    assert provider.transcription_calls == 1
     assert await store.facts_for_person(person["id"]) == []
     async with db.transaction() as conn:
         await conn.execute("UPDATE jobs SET next_at=0 WHERE status='pending'", ())
-    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
     await process(worker)
-    assert worker.providers.transcription_calls == 0
-    assert len(await store.facts_for_person(person["id"])) == 1
+    assert provider.transcription_calls == 1
+    assert provider.verification_calls == 2
+    facts = await store.facts_for_person(person["id"])
+    assert len(facts) == 1 and len(facts[0]["evidence"]) == 1
     async with db.transaction() as conn:
         result = await rows(conn, "SELECT status,attempts FROM jobs WHERE kind='learning'", ())
     assert result[0] == {"status": "done", "attempts": 2}
-    await worker.close()
     await db.close()
 
 
-async def test_transcription_automatic_retry_saves_one_fact_and_evidence(tmp_path, monkeypatch):
+async def test_transcription_automatic_retry_saves_one_fact_and_evidence(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     await queue(store, person["id"])
     inject_audio(monkeypatch)
-    worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(db)), verifier=Verifier()
-    )
 
     class Flaky(Provider):
         async def transcribe(self, pcm):
@@ -414,60 +445,82 @@ async def test_transcription_automatic_retry_saves_one_fact_and_evidence(tmp_pat
                 raise TimeoutError("temporary transcription failure")
             return self.segments
 
-    worker.providers = Flaky(transcript(), lambda _, current: [claim(current[0])])
+    provider = Flaky(transcript(), lambda _, current: [claim(current[0])])
+    worker = MemoryWorker(
+        store,
+        settings,
+        CaptureStore(store, JobQueue(db)),
+        providers=provider,
+        verifier=Verifier(),
+        pool=audio_pool,
+    )
     try:
         await process(worker)
         assert await store.facts_for_person(person["id"]) == []
         async with db.transaction() as conn:
             await conn.execute("UPDATE jobs SET next_at=0 WHERE status='pending'")
         await process(worker)
-        assert worker.providers.transcription_calls == 2
+        assert provider.transcription_calls == 2
         facts = await store.facts_for_person(person["id"])
         assert len(facts) == 1 and len(facts[0]["evidence"]) == 1
         assert await worker.jobs.pending() == []
     finally:
-        await worker.close()
         await db.close()
 
 
-async def test_failed_extraction_preserves_question_context_for_later_answer(tmp_path, monkeypatch):
+async def test_failed_extraction_preserves_question_context_for_later_answer(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, first = await queue(store, person["id"])
     inject_audio(monkeypatch)
 
-    class UserVerifier:
-        def classify(self, pcm, segments, profile):
-            return [{**s, "role": "user"} for s in segments]
+    class Unavailable(Provider):
+        unavailable = True
 
-    class Broken(Provider):
         async def extract(self, *args):
-            raise TimeoutError("extraction unavailable")
+            if self.unavailable:
+                raise TimeoutError("extraction unavailable")
+            return await super().extract(*args)
 
+    verifier = Verifier("user")
+    provider = Unavailable(transcript("Do you live in London?"))
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(db)), verifier=UserVerifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(db)),
+        providers=provider,
+        verifier=verifier,
+        pool=audio_pool,
     )
-    worker.providers = Broken(transcript("Do you live in London?"))
     try:
         for _ in range(3):
             await process(worker)
             async with db.transaction() as conn:
                 await conn.execute("UPDATE jobs SET next_at=0 WHERE status='pending'")
-        assert worker.providers.transcription_calls == 1
+        assert provider.transcription_calls == 1
         failed = (await worker.jobs.pending())[0]
         assert failed["status"] == "failed" and failed["attempts"] == 3
         await queue(store, person["id"], "answer", start=2000, encounter=first["encounter"])
 
         def confirmed(dialogue, current):
-            return [claim(
-                current[0], "residence", "London", "residence",
-                evidence=[{"segment_id": s["id"], "quote": s["text"]} for s in dialogue],
-            )]
+            return [
+                claim(
+                    current[0],
+                    "residence",
+                    "London",
+                    "residence",
+                    evidence=[{"segment_id": s["id"], "quote": s["text"]} for s in dialogue],
+                )
+            ]
 
-        provider = Provider(transcript("Yes."), confirmed)
-        worker.providers = provider
-        worker.verifier = Verifier()
+        provider.unavailable = False
+        provider.segments = transcript("Yes.")
+        provider.claims = confirmed
+        verifier.role = "visitor"
         await process(worker)
+        assert provider.transcription_calls == 2
         assert [s["text"] for s in provider.received] == ["Do you live in London?", "Yes."]
         facts = await store.facts_for_person(person["id"])
         assert len(facts) == 1 and facts[0]["value"] == "London"
@@ -475,11 +528,12 @@ async def test_failed_extraction_preserves_question_context_for_later_answer(tmp
         assert await store.latest_audio_gap(first["encounter"], 2000) is None
         assert (await worker.jobs.pending()) == [failed]
     finally:
-        await worker.close()
         await db.close()
 
 
-async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path, monkeypatch):
+async def test_relative_date_context_uses_deployment_timezone_not_host(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, payload = await queue(store, person["id"])
@@ -489,18 +543,23 @@ async def test_relative_date_context_uses_deployment_timezone_not_host(tmp_path,
             ("2026-10-26T19:00:00+00:00", payload["encounter"]),
         )
     inject_audio(monkeypatch)
-    worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
-    )
     provider = Provider(transcript("I will visit tomorrow."))
-    worker.providers = provider
+    worker = MemoryWorker(
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=provider,
+        verifier=Verifier(),
+        pool=audio_pool,
+    )
     await process(worker)
     assert provider.encounter_time == "2026-10-27T02:00:00+07:00"
-    await worker.close()
     await db.close()
 
 
-async def test_silence_finishes_without_sending_audio_to_provider(tmp_path, monkeypatch):
+async def test_silence_finishes_without_sending_audio_to_provider(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     job_id, payload = await queue(store, person["id"])
@@ -512,9 +571,13 @@ async def test_silence_finishes_without_sending_audio_to_provider(tmp_path, monk
             pytest.fail("Silent audio must stay local")
 
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=UnusedProvider([]),
+        verifier=Verifier(),
+        pool=audio_pool,
     )
-    worker.providers = UnusedProvider([])
     try:
         assert await process(worker)
         assert await worker.captures.jobs.pending() == []
@@ -524,11 +587,12 @@ async def test_silence_finishes_without_sending_audio_to_provider(tmp_path, monk
         assert metrics[0]["job_id"] == job_id
         assert "transcription_ms" not in metrics[0]
     finally:
-        await worker.close()
         await db.close()
 
 
-async def test_unavailable_voice_model_keeps_summary_without_learning_facts(tmp_path, monkeypatch):
+async def test_unavailable_voice_model_keeps_summary_without_learning_facts(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, payload = await queue(store, person["id"])
@@ -541,11 +605,11 @@ async def test_unavailable_voice_model_keeps_summary_without_learning_facts(tmp_
     worker = MemoryWorker(
         store,
         settings,
-        None,
         CaptureStore(store, JobQueue(store.db)),
+        providers=Provider(transcript(), lambda _, current: [claim(current[0])]),
         verifier=UnavailableVerifier(),
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript(), lambda _, current: [claim(current[0])])
     try:
         assert await process(worker)
         assert await worker.captures.jobs.pending() == []
@@ -554,11 +618,12 @@ async def test_unavailable_voice_model_keeps_summary_without_learning_facts(tmp_
         assert (await store.get_encounter(payload["encounter"]))["summary"]
         assert "unavailable" in worker.speaker_status
     finally:
-        await worker.close()
         await db.close()
 
 
-async def test_forgetting_removes_recordings_and_retries_filesystem_failures(tmp_path, monkeypatch):
+async def test_forgetting_removes_recordings_and_retries_filesystem_failures(
+    tmp_path, audio_pool, monkeypatch
+):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
     _, payload = await queue(store, person["id"])
@@ -573,7 +638,12 @@ async def test_forgetting_removes_recordings_and_retries_filesystem_failures(tmp
         )
     await store.forget_person(person["id"])
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=None,
+        verifier=Verifier(),
+        pool=audio_pool,
     )
     original_unlink = type(recording).unlink
 
@@ -592,7 +662,6 @@ async def test_forgetting_removes_recordings_and_retries_filesystem_failures(tmp
         assert not recording.exists()
         assert await store.pending_cleanup() == []
     finally:
-        await worker.close()
         await db.close()
 
 
@@ -618,7 +687,7 @@ def test_dialogue_budget_does_not_join_answers_to_questions_across_a_removed_tur
     assert bounded_dialogue([long_turn]) == []
 
 
-async def test_worker_transcribes_without_any_face_or_encounter(tmp_path, monkeypatch):
+async def test_worker_transcribes_without_any_face_or_encounter(tmp_path, audio_pool, monkeypatch):
     import json
 
     settings, db, store = await make_store(tmp_path)
@@ -628,11 +697,15 @@ async def test_worker_transcribes_without_any_face_or_encounter(tmp_path, monkey
     receipt = await captures.receive_clip(
         "no-face", "clip", 0, 2000, "injected.wav", [], voice["version"]
     )
-    worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
-    )
     provider = Provider(transcript("I am James."))
-    worker.providers = provider
+    worker = MemoryWorker(
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=provider,
+        verifier=Verifier(),
+        pool=audio_pool,
+    )
     try:
         await process(worker)
         assert provider.transcription_calls == 1
@@ -647,12 +720,11 @@ async def test_worker_transcribes_without_any_face_or_encounter(tmp_path, monkey
         assert turn["association"]["status"] == "unattributed"
         assert await store.list_people() == []
     finally:
-        await worker.close()
         await db.close()
 
 
 async def test_attribution_wait_does_not_include_audio_or_learning_queue_time(
-    tmp_path, monkeypatch
+    tmp_path, audio_pool, monkeypatch
 ):
     settings, db, store = await make_store(tmp_path)
     person = await store.create_person()
@@ -661,9 +733,13 @@ async def test_attribution_wait_does_not_include_audio_or_learning_queue_time(
     await queue(store, person["id"])
     inject_audio(monkeypatch)
     worker = MemoryWorker(
-        store, settings, None, CaptureStore(store, JobQueue(store.db)), verifier=Verifier()
+        store,
+        settings,
+        CaptureStore(store, JobQueue(store.db)),
+        providers=Provider(transcript()),
+        verifier=Verifier(),
+        pool=audio_pool,
     )
-    worker.providers = Provider(transcript())
     try:
         clock[0] = 4000
         assert await worker.run_once()  # Audio completes after three seconds.
@@ -674,5 +750,4 @@ async def test_attribution_wait_does_not_include_audio_or_learning_queue_time(
         assert measured["receipt_to_audio_ms"] == 3000
         assert measured["commit_ms"] >= 0
     finally:
-        await worker.close()
         await db.close()

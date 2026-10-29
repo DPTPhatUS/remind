@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor
 from pathlib import Path
 from typing import cast
 
@@ -14,30 +14,31 @@ from remind.memory.capture import CaptureStore, milliseconds
 from remind.memory.contracts import ClaimedJob
 from remind.memory.learning import learn_conversation
 from remind.memory.store import MemoryStore
-from remind.vision.models import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryWorker:
+    """Run durable jobs with dependencies owned by the caller."""
+
     def __init__(
         self,
         store: MemoryStore,
         settings: Settings,
-        registry: ModelRegistry,
         captures: CaptureStore,
-        verifier: UserVoiceVerifier | None = None,
-        pool: ThreadPoolExecutor | None = None,
+        *,
+        providers: Providers | None,
+        verifier: UserVoiceVerifier,
+        pool: Executor,
     ) -> None:
         self.store = store
         self.settings = settings
         self.captures = captures
         self.jobs = captures.jobs
-        self.providers = Providers(settings) if settings.openai_api_key else None
-        self.verifier = verifier or UserVoiceVerifier(settings, registry)
+        self.providers = providers
+        self.verifier = verifier
         self.speaker_status = "User voice setup required"
-        self.pool = pool or ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory")
-        self.owns_pool = pool is None
+        self.pool = pool
 
     async def run_once(self) -> bool:
         if self.providers is None:
@@ -135,11 +136,3 @@ class MemoryWorker:
                         path.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("Could not remove expired recording %s", path.name)
-
-    async def close(self) -> None:
-        try:
-            if self.providers:
-                await self.providers.close()
-        finally:
-            if self.owns_pool:
-                self.pool.shutdown(wait=True)

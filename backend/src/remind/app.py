@@ -117,7 +117,6 @@ def create_app(
             ) from exc
         if any(not sample or len(sample) > 4 * 1024 * 1024 for sample in samples):
             raise HTTPException(422, "Each voice recording must be between 1 byte and 4 MiB")
-        worker = runtime.worker
 
         def prepare():
             decoded = [decode_audio(sample, max_seconds=20) for sample in samples]
@@ -126,7 +125,7 @@ def create_app(
             return runtime.verifier.enroll([media["pcm"] for media in decoded])
 
         try:
-            profile = await asyncio.get_running_loop().run_in_executor(worker.pool, prepare)
+            profile = await asyncio.get_running_loop().run_in_executor(runtime.memory_pool, prepare)
         except (ImportError, FileNotFoundError, RuntimeError) as exc:
             raise HTTPException(503, str(exc)) from exc
         except (ValueError, OSError) as exc:

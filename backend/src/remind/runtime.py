@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from remind.audio.providers import Providers
 from remind.audio.speaker import UserVoiceVerifier
 from remind.config import Settings
 from remind.database import Database
@@ -27,7 +28,7 @@ def report_task_failure(task: asyncio.Task) -> None:
 
 
 class Runtime:
-    """Own the local models, database, capture session, and background tasks."""
+    """Own shared processing resources, storage, capture session and background tasks."""
 
     def __init__(self, settings: Settings, verifier: UserVoiceVerifier | None = None):
         self.settings = settings
@@ -37,8 +38,15 @@ class Runtime:
         self.captures = CaptureStore(self.store, self.jobs, settings.attribution_wait_seconds)
         self.registry = ModelRegistry(settings.data_dir / "models")
         self.verifier = verifier or UserVoiceVerifier(settings, self.registry)
+        self.providers = Providers(settings) if settings.openai_api_key else None
+        self.memory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory")
         self.worker = MemoryWorker(
-            self.store, settings, self.registry, self.captures, verifier=self.verifier
+            self.store,
+            settings,
+            self.captures,
+            providers=self.providers,
+            verifier=self.verifier,
+            pool=self.memory_pool,
         )
         self.vision_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
         self.vision: OpenCVVision | None = None
@@ -72,7 +80,11 @@ class Runtime:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            await self.worker.close()
+            try:
+                if self.providers:
+                    await self.providers.close()
+            finally:
+                self.memory_pool.shutdown(wait=True)
             self.vision_pool.shutdown(wait=True)
             await self.database.close()
 

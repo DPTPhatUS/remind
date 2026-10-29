@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from remind.database import Database
@@ -18,3 +20,9 @@ async def store(tmp_path):
 @pytest.fixture
 def captures(store):
     return CaptureStore(store, JobQueue(store.db))
+
+
+@pytest.fixture
+def audio_pool():
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-audio") as pool:
+        yield pool
